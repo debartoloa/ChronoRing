@@ -2,6 +2,30 @@
 #include "gui/gui_manager.h"
 #include <driver/gpio.h>
 
+// ============================================================================
+// PRE-INIT HARDWARE LOCK (Eseguito PRIMA di initArduino() e prima di setup())
+// ============================================================================
+// Questo costruttore C++ con priorità 101 viene eseguito nei primissimi
+// millisecondi di avvio dell'applicazione (centinaia di ms prima di setup()),
+// forzando immediatamente PIN_RELAY_TRIGGER (GPIO 44 RXD su ESP32-S3) allo
+// stato di riposo sicuro con pull-down hardware attivo.
+__attribute__((constructor(101))) static void chronoEarlyRelaySafeLock() {
+    const gpio_num_t pin = static_cast<gpio_num_t>(PIN_RELAY_TRIGGER);
+    const uint32_t safeLevel = RELAY_ACTIVE_LOW ? 1 : 0;
+
+    gpio_set_level(pin, safeLevel);
+
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << PIN_RELAY_TRIGGER);
+    io_conf.pull_down_en = RELAY_ACTIVE_LOW ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE;
+    io_conf.pull_up_en   = RELAY_ACTIVE_LOW ? GPIO_PULLUP_ENABLE    : GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
+
+    gpio_set_level(pin, safeLevel);
+}
+
 bool RelayController::_activeLow = RELAY_ACTIVE_LOW;
 volatile bool RelayController::_isActive = false;
 bool RelayController::_initialized = false;

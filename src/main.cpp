@@ -43,7 +43,7 @@ void setup() {
 
     // 2. Inizializzazione Seriale Diagnostica
     // NOTA: Su ESP32-S3 (ARDUINO_USB_CDC_ON_BOOT=1) usa esclusivamente la porta USB-CDC
-    // nativa (GPIO 19/20) senza mai invocare Serial0.begin(), lasciando GPIO 43 al Relè.
+    // nativa (GPIO 19/20) senza mai invocare Serial0.begin(), lasciando GPIO 44 (RXD) al Relè.
     Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT
     uint32_t serialWaitStart = millis();

@@ -28,7 +28,7 @@ extern bool g_has_display;
 #if CONFIG_IDF_TARGET_ESP32S3
     // --- FREENOVE FNK0104B (ESP32-S3-WROOM-1 N16R8) ---
     #define BOARD_TARGET_NAME   "ESP32-S3 (FNK0104B)"
-    #define RELAY_PIN           43  // Pin TXD del connettore UART 4P
+    #define RELAY_PIN           44  // Pin RXD del connettore UART 4P (nessuna trasmissione ROM al boot)
     #define PIN_RGB_LED         42  // WS2812 On-board (-1 se assente)
 
     // 1. Display TFT IPS 2.8" 240x320 (Driver ILI9341V - 4-Wire SPI)
