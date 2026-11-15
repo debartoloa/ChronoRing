@@ -1,0 +1,25 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code / IDE (rigenerati da PlatformIO)
+.vscode/
+*.code-workspace
+
+# File temporanei, log e backup
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Credenziali e segreti locali
+config.json
+secrets.h
+.env

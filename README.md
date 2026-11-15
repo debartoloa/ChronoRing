@@ -109,6 +109,10 @@ pio device monitor
 Esp32-Campanella/
 ├── docs/
 │   └── chronoring_logo.jpg          # Logo ufficiale ChronoRing
+├── firmware/                        # Binari precompilati pronti per il flash / OTA
+│   ├── bootloader.bin
+│   ├── firmware.bin
+│   └── partitions.bin
 ├── include/
 │   └── lv_conf.h                    # Configurazione LVGL v8.3 (PSRAM / SRAM dinamica)
 ├── src/
