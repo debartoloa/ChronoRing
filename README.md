@@ -79,7 +79,47 @@ Sulla scheda **Freenove ESP32-S3**, il connettore UART a 4 pin espone `5V`, `GND
 
 ---
 
-## 🚀 Compilazione e Installazione
+## ⚡ Primo Caricamento su ESP32 Vergine (Senza Installare Software — Web Flasher)
+
+Se hai una scheda **ESP32-S3 vergine** (mai programmata prima) e vuoi installare **ChronoRing** senza installare Arduino IDE o PlatformIO, puoi utilizzare direttamente dal browser il tool ufficiale **[ESP32-S3-Web-Flasher](https://github.com/debartoloa/ESP32-S3-Web-Flasher)**:
+
+> 🌐 **Apri lo strumento Web Flasher su GitHub Pages:** **[https://debartoloa.github.io/ESP32-S3-Web-Flasher/](https://debartoloa.github.io/ESP32-S3-Web-Flasher/)**
+
+### 1. Requisiti
+- Un browser desktop con supporto **Web Serial API**: **Google Chrome**, **Microsoft Edge** oppure **Opera**.
+- Un **cavo USB dati** collegato alla porta USB della scheda ESP32-S3.
+- Scarica sul tuo PC il file [`firmware/firmware.bin`](./firmware/firmware.bin) dalla cartella [`firmware/`](./firmware) di questo repository *(nella stessa cartella trovi anche `bootloader.bin` e `partitions.bin` in caso di caricamento manuale avanzato via `esptool`)*.
+
+### 2. Procedura Guidata a 3 Step
+
+1. **STEP 1 — DISPOSITIVO:**
+   - Collega la scheda ESP32-S3 via USB al computer.
+   - Nella pagina del Web Flasher clicca su **"Seleziona Dispositivo USB"** e scegli la porta seriale (`COMx` / `USB JTAG/serial debug unit`).
+   - La famiglia chip viene auto-rilevata (`ESP32-S3 (bootloader 0x0000)`).
+   - *Nota su schede vergini:* se la scheda non entra automaticamente in modalità programmazione, tieni premuto il tasto **`BOOT`**, premi e rilascia **`RESET`**, poi rilascia **`BOOT`** e riprova la connessione.
+2. **STEP 2 — FIRMWARE:**
+   - Seleziona la scheda **"Carica tuo .bin"**.
+   - Seleziona dal tuo PC il file **`firmware.bin`** appena scaricato da [`firmware/`](./firmware).
+   - Lascia attiva la spunta **"Aggiungi automaticamente `bootloader.bin`, `partitions.bin` e `boot_app0.bin` per primo flash (offset `0x10000`)"**: in questo modo lo strumento comporrà in automatico l'intera mappa di memoria necessaria al primo avvio:
+
+     | Indirizzo Flash | File Caricato | Descrizione |
+     | :--- | :--- | :--- |
+     | `0x0000` | `bootloader.bin` | Bootloader ESP32-S3 *(aggiunto in automatico)* |
+     | `0x8000` | `partitions.bin` | Tabella partizioni Dual-OTA *(aggiunta in automatico)* |
+     | `0xE000` | `boot_app0.bin` | Selettore partizione OTA *(aggiunto in automatico)* |
+     | `0x10000` | **`firmware.bin`** | Firmware applicativo **ChronoRing** |
+
+3. **STEP 3 — FLASH:**
+   - Lascia attiva l'opzione **"Cancella memoria e installa da zero (consigliato al primo flash)"**.
+   - Premi **"Flash Firmware"** e attendi il completamento al 100%: al termine l'ESP32 si riavvierà automaticamente ed entrerà in funzione.
+
+### 3. Primo Avvio & Aggiornamenti Futuri (OTA)
+- Al primo avvio, non essendo presente alcuna rete Wi-Fi configurata, ChronoRing attiverà l'hotspot **`ChronoRing-Setup`** su **`http://192.168.4.1`** per la configurazione guidata.
+- Per tutti gli **aggiornamenti successivi**, non servirà più collegare il cavo USB: basterà aprire la pagina **`http://chronoring.local/update`** dalla Dashboard Web e caricare direttamente il solo file **`firmware.bin`**.
+
+---
+
+## 🚀 Compilazione e Installazione (Sviluppatori / PlatformIO)
 
 ### Prerequisiti
 - [Visual Studio Code](https://code.visualstudio.com/) con estensione [PlatformIO IDE](https://platformio.org/).
