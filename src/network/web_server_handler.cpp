@@ -1,5 +1,6 @@
 #include "web_server_handler.h"
 #include "network_manager.h"
+#include "../hardware_pins.h"
 #include "../config_manager.h"
 #include "../relay_controller.h"
 #include "../scheduler/scheduler.h"
@@ -59,7 +60,7 @@ static const char LOGIN_HTML[] PROGMEM = R"rawliteral(
     </svg>
   </div>
   <h1>ChronoRing</h1>
-  <p class="sub">Sistema Automazione Campanella Scolastica</p>
+  <p class="sub">Sistema Automazione Campanella Scolastica &bull; <span style="color:var(--cyan);font-weight:700;">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</span></p>
   <form id="loginForm">
     <div class="input-group">
       <label for="pwd">PASSWORD AMMINISTRATORE</label>
@@ -147,7 +148,17 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
   .form-group input{width:100%;}
   .logo-preview-wrap{display:flex;align-items:center;gap:14px;background:#071022;padding:12px;border-radius:10px;border:1px dashed rgba(0,212,255,0.3);}
   canvas#logoCanvas{background:#0B0F17;border:1px solid rgba(255,255,255,0.15);border-radius:8px;flex-shrink:0;}
-  #toast{position:fixed;bottom:20px;right:20px;background:#0f2942;border:1px solid var(--cyan);color:#fff;padding:12px 20px;border-radius:10px;box-shadow:0 8px 25px rgba(0,0,0,0.5);display:none;z-index:999;font-size:0.9rem;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(4,10,24,0.82);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:1000;padding:16px;}
+  .modal-box{background:var(--card);border:1px solid var(--cyan);border-radius:16px;width:100%;max-width:440px;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 15px 45px rgba(0,0,0,0.65);overflow:hidden;}
+  .modal-header{padding:16px 20px;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:space-between;}
+  .modal-header h3{color:var(--cyan);font-size:1.02rem;text-transform:uppercase;letter-spacing:0.8px;}
+  .modal-body{padding:16px 20px;overflow-y:auto;flex:1;}
+  .modal-footer{padding:12px 20px;border-top:1px solid rgba(255,255,255,0.08);display:flex;justify-content:space-between;gap:10px;}
+  .wifi-item{display:flex;align-items:center;justify-content:space-between;background:var(--card2);border:1px solid rgba(0,212,255,0.18);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:0.18s;}
+  .wifi-item:hover{border-color:var(--cyan);background:#162d54;transform:translateY(-1px);}
+  .wifi-ssid{font-weight:700;color:#fff;font-size:0.95rem;margin-bottom:3px;word-break:break-all;}
+  .wifi-meta{font-size:0.78rem;color:var(--muted);}
+  #toast{position:fixed;bottom:20px;right:20px;background:#0f2942;border:1px solid var(--cyan);color:#fff;padding:12px 20px;border-radius:10px;box-shadow:0 8px 25px rgba(0,0,0,0.5);display:none;z-index:1100;font-size:0.9rem;}
 </style>
 </head>
 <body>
@@ -159,7 +170,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
       <circle cx="60" cy="87" r="6" fill="#fbbf24"/>
     </svg>
     <div>
-      <h1>ChronoRing</h1>
+      <h1>ChronoRing <span id="fwHeaderBadge" class="badge badge-ok" style="font-size:0.72rem;vertical-align:middle;margin-left:8px;">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</span></h1>
       <span id="netInfo">Connessione in corso...</span>
     </div>
   </div>
@@ -181,6 +192,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     <div class="stat-row"><span>Ultimo Squillo Auto:</span><strong id="lastBell">--</strong></div>
     <div class="stat-row"><span id="relayPinLabel">Stato Relè:</span><strong id="relayState">INATTIVO</strong></div>
     <div class="stat-row"><span>Modalità Operativa:</span><strong id="hwMode">--</strong></div>
+    <div class="stat-row"><span>Versione Firmware:</span><strong id="fwVer" style="color:var(--cyan)">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</strong></div>
     <div class="stat-row"><span>Indirizzo IP / mDNS:</span><strong id="ipAddr">chronoring.local</strong></div>
   </div>
 
@@ -253,6 +265,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
           <tr>
             <th>#</th>
             <th>Orario (HH:MM)</th>
+            <th>Etichetta / Evento</th>
             <th>Giorni Attivi</th>
             <th>Abilitato</th>
             <th>Elimina</th>
@@ -290,7 +303,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 
   <!-- CONFIGURAZIONE WI-FI -->
   <div class="card">
-    <h2><span>📶 Configurazione Rete Wi-Fi</span></h2>
+    <h2>
+      <span>📶 Configurazione Rete Wi-Fi</span>
+      <button class="btn btn-outline" style="padding:6px 12px;font-size:0.8rem;" onclick="openWifiModal()" id="btnScanWifi">🔍 Cerca Reti</button>
+    </h2>
     <div class="form-grid">
       <div class="form-group">
         <label>SSID Rete Wi-Fi</label>
@@ -301,6 +317,20 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         <input type="password" id="wifiPwd" placeholder="Password Wi-Fi...">
       </div>
       <button class="btn btn-cyan" onclick="saveWiFi()">💾 Salva e Connetti Wi-Fi</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="wifiModal" onclick="if(event.target===this)closeWifiModal()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>📶 Reti Wi-Fi Disponibili</h3>
+      <button class="btn btn-danger" style="padding:4px 10px;font-size:0.82rem;" onclick="closeWifiModal()">✕</button>
+    </div>
+    <div class="modal-body" id="wifiModalBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" id="btnRescanModal" onclick="startWifiScan()">🔄 Aggiorna Lista</button>
+      <button class="btn btn-danger" onclick="closeWifiModal()">Chiudi</button>
     </div>
   </div>
 </div>
@@ -341,6 +371,13 @@ async function fetchStatus() {
     if (hm) {
       hm.textContent = d.has_display ? '🖥️ Display Touch Attivo' : '⚡ Headless (Web/Scheduler)';
       hm.style.color = d.has_display ? '#00d4ff' : '#94a3b8';
+    }
+    if (d.fw_version) {
+      const fv = 'v' + d.fw_version;
+      const fwEl = document.getElementById('fwVer');
+      const fwBadge = document.getElementById('fwHeaderBadge');
+      if (fwEl) fwEl.textContent = fv;
+      if (fwBadge) fwBadge.textContent = fv;
     }
     document.getElementById('netInfo').textContent = d.net_mode;
     document.getElementById('ipAddr').textContent = d.ip + ' (chronoring.local)';
@@ -449,6 +486,14 @@ async function saveSchoolName() {
   showToast(d.message, !r.ok);
 }
 
+function escapeAttr(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function renderSchedule() {
   const tbody = document.getElementById('scheduleBody');
   tbody.innerHTML = '';
@@ -457,6 +502,7 @@ function renderSchedule() {
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td><input type="time" value="${item.time}" onchange="scheduleData[${idx}].time = this.value;"></td>
+      <td><input type="text" maxlength="30" placeholder="Es. 1ª Ora, Ricreazione..." value="${escapeAttr(item.label || 'Campanella')}" style="width:100%;min-width:150px;" oninput="scheduleData[${idx}].label = this.value;"></td>
       <td><span class="badge badge-ok">Lun - Sab</span></td>
       <td>
         <label class="switch">
@@ -471,7 +517,7 @@ function renderSchedule() {
 }
 
 function addScheduleRow() {
-  scheduleData.push({time: '11:10', days_mask: 126, enabled: true});
+  scheduleData.push({time: '11:10', label: 'Campanella', days_mask: 126, enabled: true});
   renderSchedule();
 }
 
@@ -538,6 +584,93 @@ async function savePassword() {
   }
 }
 
+let wifiScanTimer = null;
+
+function openWifiModal() {
+  document.getElementById('wifiModal').style.display = 'flex';
+  startWifiScan();
+}
+
+function closeWifiModal() {
+  document.getElementById('wifiModal').style.display = 'none';
+  if (wifiScanTimer) {
+    clearTimeout(wifiScanTimer);
+    wifiScanTimer = null;
+  }
+}
+
+function selectWifiFromModal(ssid) {
+  document.getElementById('wifiSsid').value = ssid;
+  closeWifiModal();
+  showToast('Rete "' + ssid + '" selezionata! Inserisci la password e premi Salva.');
+  document.getElementById('wifiPwd').focus();
+}
+
+async function startWifiScan(attempt = 0) {
+  const body = document.getElementById('wifiModalBody');
+  const btnRescan = document.getElementById('btnRescanModal');
+  if (wifiScanTimer) {
+    clearTimeout(wifiScanTimer);
+    wifiScanTimer = null;
+  }
+  if (attempt === 0) {
+    body.innerHTML = '<div style="text-align:center;padding:28px 10px;color:var(--cyan);">⏳ Scansione reti Wi-Fi in corso...<div style="font-size:0.8rem;color:var(--muted);margin-top:6px;">Attendere (2-3 secondi)</div></div>';
+    btnRescan.disabled = true;
+  }
+  try {
+    const r = await fetch('/api/wifi-scan');
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    const d = await r.json();
+    if (d.status === 'running') {
+      if (attempt < 12) {
+        wifiScanTimer = setTimeout(() => startWifiScan(attempt + 1), 600);
+        return;
+      }
+      body.innerHTML = '<div style="text-align:center;padding:20px;color:#fca5a5;">Timeout scansione. Premi Aggiorna Lista per riprovare.</div>';
+      btnRescan.disabled = false;
+      return;
+    }
+    btnRescan.disabled = false;
+    if (d.status === 'error') {
+      body.innerHTML = '<div style="text-align:center;padding:20px;color:#fca5a5;">Impossibile eseguire la scansione in questo momento. Riprova tra un istante.</div>';
+      return;
+    }
+    const nets = (d.networks || []).slice().sort((a, b) => b.rssi - a.rssi);
+    if (nets.length === 0) {
+      body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);">Nessuna rete Wi-Fi rilevata nelle vicinanze.</div>';
+      return;
+    }
+    body.innerHTML = '';
+    nets.forEach(n => {
+      const item = document.createElement('div');
+      item.className = 'wifi-item';
+      item.onclick = () => selectWifiFromModal(n.ssid);
+
+      const left = document.createElement('div');
+      const ssidEl = document.createElement('div');
+      ssidEl.className = 'wifi-ssid';
+      ssidEl.textContent = n.ssid;
+      const metaEl = document.createElement('div');
+      metaEl.className = 'wifi-meta';
+      metaEl.textContent = (n.open ? '🔓 Rete Aperta' : '🔒 Protetta') + ' • Segnale ' + n.rssi + ' dBm';
+      left.appendChild(ssidEl);
+      left.appendChild(metaEl);
+
+      const right = document.createElement('span');
+      const qual = n.rssi >= -60 ? 'Ottimo' : (n.rssi >= -75 ? 'Buono' : 'Debole');
+      right.className = 'badge ' + (n.rssi >= -65 ? 'badge-ok' : 'badge-warn');
+      right.textContent = qual;
+
+      item.appendChild(left);
+      item.appendChild(right);
+      body.appendChild(item);
+    });
+  } catch (e) {
+    btnRescan.disabled = false;
+    body.innerHTML = '<div style="text-align:center;padding:20px;color:#fca5a5;">Errore di comunicazione durante la scansione.</div>';
+  }
+}
+
 async function saveWiFi() {
   const ssid = document.getElementById('wifiSsid').value.trim();
   const pwd = document.getElementById('wifiPwd').value;
@@ -586,6 +719,7 @@ static const char OTA_HTML[] PROGMEM = R"rawliteral(
 <body>
 <div class="ota-card">
   <h1>⬆️ Aggiornamento Firmware OTA</h1>
+  <p>Versione attualmente installata: <strong style="color:var(--cyan)">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</strong></p>
   <p>Seleziona il file compilato <code>firmware.bin</code> per aggiornare la partizione OTA di <strong>ChronoRing</strong>.</p>
   <form id="otaForm">
     <div class="file-box">
@@ -755,6 +889,7 @@ void WebServerHandler::setupRoutes() {
         doc["relay_active"] = RelayController::isActive();
         doc["relay_pin"] = RELAY_PIN;
         doc["has_display"] = g_has_display;
+        doc["fw_version"] = CHRONORING_FW_VERSION;
         doc["suspended"] = ConfigManager::isSuspended();
         doc["net_mode"] = NetworkManager::getNetworkModeString();
         doc["ip"] = NetworkManager::getIpAddress();
@@ -787,6 +922,7 @@ void WebServerHandler::setupRoutes() {
             obj["time"] = tBuf;
             obj["days_mask"] = item.daysMask;
             obj["enabled"] = item.enabled;
+            obj["label"] = item.label;
         }
 
         String out;
@@ -931,6 +1067,10 @@ void WebServerHandler::setupRoutes() {
                     item.minute = static_cast<uint8_t>(m);
                     item.daysMask = obj["days_mask"] | ConfigManager::DAYS_MON_TO_SAT_MASK;
                     item.enabled = obj["enabled"] | true;
+                    String lblStr = String(obj["label"] | "Campanella");
+                    lblStr.trim();
+                    const char* finalLbl = lblStr.length() > 0 ? lblStr.c_str() : "Campanella";
+                    strlcpy(item.label, finalLbl, sizeof(item.label));
                     cfg.schedule.push_back(item);
                 }
             }
@@ -999,7 +1139,17 @@ void WebServerHandler::setupRoutes() {
         }
     );
 
-    // 14. API CONFIGURAZIONE CREDENZIALI WI-FI (POST /api/wifi)
+    // 14. API SCANSIONE RETI WI-FI CIRCOSTANTI (GET /api/wifi-scan)
+    _server.on("/api/wifi-scan", HTTP_GET, [](AsyncWebServerRequest* request) {
+        if (!isAuthenticated(request)) {
+            request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+            return;
+        }
+        String json = NetworkManager::getOrStartWifiScanJson();
+        request->send(200, "application/json", json);
+    });
+
+    // 15. API CONFIGURAZIONE CREDENZIALI WI-FI (POST /api/wifi)
     _server.on("/api/wifi", HTTP_POST,
         [](AsyncWebServerRequest* request) {},
         nullptr,
@@ -1095,4 +1245,41 @@ void WebServerHandler::setupRoutes() {
             }
         }
     );
+
+    // 16. ENDPOINT CAPTIVE PORTAL (Android, iOS/macOS, Windows) PER CONFIGURAZIONE IMMEDIATA SU AP
+    auto captiveRedirectHandler = [](AsyncWebServerRequest* request) {
+        if (NetworkManager::isApActive()) {
+            String target = String("http://") + NetworkManager::getIpAddress() + "/";
+            request->redirect(target);
+        } else {
+            request->redirect("/");
+        }
+    };
+
+    const char* captivePaths[] = {
+        "/generate_204",
+        "/gen_204",
+        "/hotspot-detect.html",
+        "/library/test/success.html",
+        "/connecttest.txt",
+        "/ncsi.txt",
+        "/redirect",
+        "/canonical.html",
+        "/success.txt"
+    };
+    for (const char* path : captivePaths) {
+        _server.on(path, HTTP_GET, captiveRedirectHandler);
+    }
+
+    _server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->send(204);
+    });
+
+    _server.onNotFound([captiveRedirectHandler](AsyncWebServerRequest* request) {
+        if (NetworkManager::isApActive()) {
+            captiveRedirectHandler(request);
+        } else {
+            request->send(404, "text/plain", "Risorsa non trovata");
+        }
+    });
 }

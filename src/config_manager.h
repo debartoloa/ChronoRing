@@ -15,6 +15,7 @@ struct BellScheduleItem {
     uint8_t minute;
     uint8_t daysMask; // Bitmask giorni: Bit 0 = Dom, Bit 1 = Lun ... Bit 6 = Sab (Lun-Sab = 0b01111110 = 0x7E)
     bool enabled;
+    char label[32];   // Etichetta personalizzata (es. "1a Ora", "Inizio Ricreazione", "Uscita")
 };
 
 struct SystemConfig {

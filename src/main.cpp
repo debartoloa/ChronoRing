@@ -17,6 +17,7 @@ void printSystemBanner() {
     Serial.println("\n==================================================");
     Serial.println("             C H R O N O R I N G                  ");
     Serial.println("   Sistema Automazione Campanella Scolastica      ");
+    Serial.printf("   Versione Firmware : v%s\n", CHRONORING_FW_VERSION);
     Serial.printf("   Target Hardware : %s\n", BOARD_TARGET_NAME);
     Serial.printf("   Pin Relè        : GPIO %d (%s)\n",
                   RELAY_PIN, RELAY_ACTIVE_LOW ? "Active LOW" : "Active HIGH");

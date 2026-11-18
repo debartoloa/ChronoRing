@@ -61,6 +61,17 @@ public:
      */
     static String getFormattedDate();
 
+    /**
+     * @brief Esegue una scansione preventiva per verificare se l'SSID salvato è visibile nell'etere.
+     */
+    static bool isSavedNetworkVisible(const char* targetSsid, int32_t* outRssi = nullptr);
+
+    /**
+     * @brief Gestisce la scansione Wi-Fi asincrona non-bloccante per la Dashboard Web.
+     *        Avvia la scansione se non attiva e restituisce JSON {"status":"running"|"done","networks":[...]}.
+     */
+    static String getOrStartWifiScanJson();
+
     static bool isStaConnected();
     static bool isApActive();
     static String getIpAddress();
@@ -73,6 +84,8 @@ private:
     static volatile bool _mdnsStarted;
     static volatile bool _ntpConfigured;
     static volatile bool _reconnectRequested;
+    static volatile bool _scanInProgress;
+    static volatile uint32_t _lastScanTimestampMs;
     static TaskHandle_t _netTaskHandle;
 
     static void networkTask(void* pvParameters);

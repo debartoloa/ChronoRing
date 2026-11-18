@@ -5,6 +5,25 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-18
+
+### Added
+- **Etichette Personalizzabili per ogni Campanella**:
+  - Aggiunto campo `label` (max 30 caratteri visibili / buffer 32 byte) per ciascuna voce in `BellScheduleItem` e persistenza su `/config.json` in LittleFS, con fallback automatico a `"Campanella"` per configurazioni preesistenti.
+  - Nuova colonna **Etichetta / Evento** modificabile nella tabella orari della Dashboard Web (`/api/config` e `/api/schedule`).
+  - Scorrimento automatico (`LV_LABEL_LONG_SCROLL_CIRCULAR`) sul display touch LVGL per etichette lunghe nel box del prossimo suono.
+- **Hotspot Wi-Fi `ChronoRing-Setup` Stabile, Pre-Scan & Captive Portal (`NetworkManager`, `WebServerHandler`)**:
+  - Scansione preventiva all'avvio (`isSavedNetworkVisible`): se la rete Wi-Fi salvata non è presente nell'etere, attiva subito l'hotspot aperto `ChronoRing-Setup` senza attese inutili e senza channel-hopping STA in background.
+  - Configurazione esplicita `192.168.4.1` (Gateway e Subnet `255.255.255.0`, canale fisso 1) con DHCP Server attivo e sospensione dei retry STA mentre un dispositivo è connesso all'hotspot.
+  - Server DNS Captive Portal (`DNSServer` su porta 53 + route di rilevamento Android/iOS/Windows) per aprire automaticamente il pannello di ChronoRing appena ci si collega all'hotspot.
+  - Scansione Wi-Fi asincrona non-bloccante (`WiFi.scanNetworks(true, ...)` protetta da grace period e debounce) con **riquadro popup modale** nella Dashboard Web (`🔍 Cerca Reti`) per selezionare la rete rilevata senza interrompere la connessione attiva.
+- **Versione Firmware Integrata (`CHRONORING_FW_VERSION`)**:
+  - Definito il numero di versione centralizzato in `hardware_pins.h` (`1.1.0`), stampato nel banner seriale all'avvio ed esposto via `/api/status` su Dashboard Web, pagina Login e pagina di aggiornamento OTA (`/update`).
+
+### Changed
+- **Scheduler Dinamico (`Scheduler`)**:
+  - Rimossa la funzione con nomi cablati (`Scheduler::getBellEventName`): lo Scheduler utilizza ora esclusivamente l'etichetta definita dall'utente sia per il prossimo evento sul display sia per lo storico dell'ultimo squillo (`HH:MM (Etichetta)`).
+
 ## [1.0.0] - 2026-11-15
 
 ### Added

@@ -31,22 +31,28 @@ void ConfigManager::loadDefaults(SystemConfig& cfg) {
 
     // Orari scolastici predefiniti (Lun-Sab):
     // 08:10, 09:10, 10:10, 10:55, 11:05, 12:10, 13:00
-    const uint8_t defaultTimes[][2] = {
-        {8, 10},
-        {9, 10},
-        {10, 10},
-        {10, 55},
-        {11, 5},
-        {12, 10},
-        {13, 0}
+    struct DefaultBell {
+        uint8_t h;
+        uint8_t m;
+        const char* label;
+    };
+    const DefaultBell defaultBells[] = {
+        {8,  10, "Ingresso"},
+        {9,  10, "2a Ora"},
+        {10, 10, "3a Ora"},
+        {10, 55, "Inizio Ricreazione"},
+        {11, 5,  "Fine Ricreazione"},
+        {12, 10, "5a Ora"},
+        {13, 0,  "Uscita"}
     };
 
-    for (const auto& t : defaultTimes) {
+    for (const auto& t : defaultBells) {
         BellScheduleItem item;
-        item.hour = t[0];
-        item.minute = t[1];
+        item.hour = t.h;
+        item.minute = t.m;
         item.daysMask = DAYS_MON_TO_SAT_MASK;
         item.enabled = true;
+        strlcpy(item.label, t.label, sizeof(item.label));
         cfg.schedule.push_back(item);
     }
 }
@@ -136,6 +142,11 @@ bool ConfigManager::loadFromFileInternal() {
                 item.minute = static_cast<uint8_t>(m);
                 item.daysMask = obj["days_mask"] | DAYS_MON_TO_SAT_MASK;
                 item.enabled = obj["enabled"] | true;
+                const char* lbl = obj["label"] | "Campanella";
+                if (strlen(lbl) == 0) {
+                    lbl = "Campanella";
+                }
+                strlcpy(item.label, lbl, sizeof(item.label));
                 _config.schedule.push_back(item);
             }
         }
@@ -170,6 +181,7 @@ bool ConfigManager::saveToFileInternal(const SystemConfig& cfg) {
         obj["time"] = timeBuf;
         obj["days_mask"] = item.daysMask;
         obj["enabled"] = item.enabled;
+        obj["label"] = (strlen(item.label) > 0) ? item.label : "Campanella";
     }
 
     File file = LittleFS.open(CONFIG_FILE_PATH, FILE_WRITE);
@@ -345,8 +357,8 @@ void ConfigManager::printDiagnostics() {
 
     for (size_t i = 0; i < cfg.schedule.size(); ++i) {
         const auto& item = cfg.schedule[i];
-        Serial.printf("   [%02u] %02u:%02u | Giorni Mask: 0x%02X | %s\n",
-                      i + 1, item.hour, item.minute, item.daysMask,
+        Serial.printf("   [%02u] %02u:%02u | %-20s | Giorni Mask: 0x%02X | %s\n",
+                      i + 1, item.hour, item.minute, item.label, item.daysMask,
                       item.enabled ? "ABILITATO" : "DISABILITATO");
     }
     Serial.println("==================================================");

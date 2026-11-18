@@ -433,7 +433,7 @@ void GuiManager::buildUi() {
 
     _lblEventTitle = lv_label_create(_eventBox);
     lv_obj_set_width(_lblEventTitle, 150);
-    lv_label_set_long_mode(_lblEventTitle, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(_lblEventTitle, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(_lblEventTitle, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(_lblEventTitle, &lv_font_montserrat_12, 0);
     lv_label_set_text(_lblEventTitle, "Prossimo suono");
@@ -707,7 +707,9 @@ void GuiManager::refreshDynamicData() {
     if (!_lastAppliedSuspended) {
         String evLabel, evCountdown;
         Scheduler::getNextBellDetails(evLabel, evCountdown);
-        lv_label_set_text(_lblEventTitle, evLabel.c_str());
+        if (strcmp(lv_label_get_text(_lblEventTitle), evLabel.c_str()) != 0) {
+            lv_label_set_text(_lblEventTitle, evLabel.c_str());
+        }
         lv_label_set_text(_lblEventSub, evCountdown.c_str());
     }
 

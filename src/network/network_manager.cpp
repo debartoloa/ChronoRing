@@ -3,13 +3,24 @@
 #include "../config_manager.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <DNSServer.h>
+#include <ArduinoJson.h>
 #include <esp_sntp.h>
+
+static DNSServer s_dnsServer;
+static const IPAddress AP_LOCAL_IP(192, 168, 4, 1);
+static const IPAddress AP_GATEWAY_IP(192, 168, 4, 1);
+static const IPAddress AP_SUBNET_MASK(255, 255, 255, 0);
+static constexpr uint16_t CAPTIVE_DNS_PORT = 53;
+static constexpr uint8_t  AP_FIXED_CHANNEL = 1;
 
 volatile bool NetworkManager::_staConnected = false;
 volatile bool NetworkManager::_apActive = false;
 volatile bool NetworkManager::_mdnsStarted = false;
 volatile bool NetworkManager::_ntpConfigured = false;
 volatile bool NetworkManager::_reconnectRequested = false;
+volatile bool NetworkManager::_scanInProgress = false;
+volatile uint32_t NetworkManager::_lastScanTimestampMs = 0;
 TaskHandle_t NetworkManager::_netTaskHandle = nullptr;
 
 constexpr const char* NetworkManager::MDNS_HOSTNAME;
@@ -50,6 +61,125 @@ void NetworkManager::begin() {
     }
 }
 
+bool NetworkManager::isSavedNetworkVisible(const char* targetSsid, int32_t* outRssi) {
+    if (!targetSsid || strlen(targetSsid) == 0) {
+        return false;
+    }
+
+    // Garantiamo che l'interfaccia STA sia attiva per poter scansionare l'etere
+    wifi_mode_t curMode = WiFi.getMode();
+    if (curMode == WIFI_MODE_NULL) {
+        WiFi.mode(WIFI_STA);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    } else if (curMode == WIFI_MODE_AP) {
+        WiFi.mode(WIFI_AP_STA);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    Serial.printf("[NET] Pre-scan Wi-Fi per verificare la presenza di '%s'...\n", targetSsid);
+    int n = WiFi.scanNetworks(false, false, false, 150);
+    bool found = false;
+    int32_t bestRssi = -127;
+
+    if (n > 0) {
+        for (int i = 0; i < n; ++i) {
+            if (WiFi.SSID(i) == targetSsid) {
+                found = true;
+                int32_t r = WiFi.RSSI(i);
+                if (r > bestRssi) {
+                    bestRssi = r;
+                }
+            }
+        }
+    }
+    WiFi.scanDelete();
+
+    if (outRssi) {
+        *outRssi = bestRssi;
+    }
+
+    if (found) {
+        Serial.printf("[NET] Rete '%s' rilevata (RSSI: %d dBm).\n", targetSsid, bestRssi);
+    } else {
+        Serial.printf("[NET] Rete '%s' NON trovata nell'etere.\n", targetSsid);
+    }
+    return found;
+}
+
+String NetworkManager::getOrStartWifiScanJson() {
+    int16_t n = WiFi.scanComplete();
+
+    if (n == WIFI_SCAN_RUNNING) {
+        return "{\"status\":\"running\",\"networks\":[]}";
+    }
+
+    if (n >= 0) {
+        _scanInProgress = false;
+        _lastScanTimestampMs = millis();
+
+        JsonDocument doc;
+        doc["status"] = "done";
+        JsonArray arr = doc["networks"].to<JsonArray>();
+
+        for (int i = 0; i < n; ++i) {
+            String ssid = WiFi.SSID(i);
+            if (ssid.length() == 0) continue;
+
+            int32_t rssi = WiFi.RSSI(i);
+            bool open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+
+            // Deduplica eventuali ripetitori con lo stesso SSID mantenendo il segnale più forte
+            bool duplicate = false;
+            for (JsonObject existing : arr) {
+                if (ssid == (existing["ssid"] | "")) {
+                    duplicate = true;
+                    if (rssi > (existing["rssi"] | -127)) {
+                        existing["rssi"] = rssi;
+                        existing["open"] = open;
+                    }
+                    break;
+                }
+            }
+            if (!duplicate) {
+                JsonObject obj = arr.add<JsonObject>();
+                obj["ssid"] = ssid;
+                obj["rssi"] = rssi;
+                obj["open"] = open;
+            }
+        }
+        WiFi.scanDelete();
+
+        String out;
+        serializeJson(doc, out);
+        return out;
+    }
+
+    // n == WIFI_SCAN_FAILED (-2): nessuna scansione completata/in corso oppure scan scaduta
+    if (_scanInProgress && (millis() - _lastScanTimestampMs > 1000)) {
+        _scanInProgress = false;
+        return "{\"status\":\"error\",\"networks\":[]}";
+    }
+
+    wifi_mode_t curMode = WiFi.getMode();
+    if (curMode == WIFI_MODE_NULL) {
+        WiFi.mode(WIFI_STA);
+    } else if (curMode == WIFI_MODE_AP) {
+        WiFi.mode(WIFI_AP_STA);
+    }
+
+    _scanInProgress = true;
+    _lastScanTimestampMs = millis();
+
+    // Avvio scansione asincrona (200 ms/canale -> timeout interno 4000 ms): ritorna subito senza bloccare HTTP
+    int16_t startRes = WiFi.scanNetworks(true, false, false, 200);
+    if (startRes == WIFI_SCAN_FAILED) {
+        _scanInProgress = false;
+        return "{\"status\":\"error\",\"networks\":[]}";
+    }
+
+    return "{\"status\":\"running\",\"networks\":[]}";
+}
+
 bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
     SystemConfig cfg = ConfigManager::getConfig();
     if (strlen(cfg.wifiSsid) == 0) {
@@ -58,15 +188,28 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
         return false;
     }
 
+    // Verifica preventiva: evita di bloccare 20s o causare channel-hopping se la rete non esiste
+    if (!isSavedNetworkVisible(cfg.wifiSsid)) {
+        Serial.printf("[NET] Avvio immediato Hotspot '%s' (rete salvata non presente).\n", FALLBACK_AP_SSID);
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, true);
+        _staConnected = false;
+        return false;
+    }
+
     Serial.printf("[NET] Connessione alla rete Wi-Fi '%s' in corso (timeout %u s)...\n",
                   cfg.wifiSsid, timeoutMs / 1000);
 
     WiFi.mode(_apActive ? WIFI_AP_STA : WIFI_STA);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(cfg.wifiSsid, cfg.wifiPassword);
 
     uint32_t startMs = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - startMs < timeoutMs)) {
-        vTaskDelay(pdMS_TO_TICKS(250));
+        if (_apActive) {
+            s_dnsServer.processNextRequest();
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
         Serial.print(".");
     }
     Serial.println();
@@ -75,6 +218,7 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
         _staConnected = true;
         if (_apActive) {
             Serial.println("[NET] Connessione STA stabilita: disattivazione Access Point di fallback.");
+            s_dnsServer.stop();
             WiFi.softAPdisconnect(true);
             WiFi.mode(WIFI_STA);
             _apActive = false;
@@ -84,7 +228,9 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
         return true;
     }
 
-    Serial.println("[NET] ATTENZIONE: Connessione Wi-Fi fallita entro il timeout di 20 secondi.");
+    Serial.println("[NET] ATTENZIONE: Connessione Wi-Fi fallita entro il timeout. Arresto ricerca STA.");
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, true);
     _staConnected = false;
     return false;
 }
@@ -92,14 +238,34 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
 void NetworkManager::startFallbackAP() {
     if (_apActive) return;
 
-    Serial.printf("[NET] Avvio Access Point di emergenza: SSID='%s'...\n", FALLBACK_AP_SSID);
-    WiFi.mode(WIFI_AP_STA);
+    Serial.printf("[NET] Avvio Access Point di emergenza: SSID='%s' (AP aperto)...\n", FALLBACK_AP_SSID);
 
-    bool ok = WiFi.softAP(FALLBACK_AP_SSID, FALLBACK_AP_PASS);
+    // CRITICO: Ferma qualsiasi ricerca STA residua per evitare channel-hopping che rompe il DHCP su AP
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, true);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    WiFi.mode(WIFI_AP_STA);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    const char* apPass = (strlen(FALLBACK_AP_PASS) > 0) ? FALLBACK_AP_PASS : nullptr;
+    bool ok = WiFi.softAP(FALLBACK_AP_SSID, apPass, AP_FIXED_CHANNEL, 0, 4);
     if (ok) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        // Imposta esplicitamente IP 192.168.4.1 e avvia il DHCP Server interno (range 192.168.4.2 - 192.168.4.12)
+        if (!WiFi.softAPConfig(AP_LOCAL_IP, AP_GATEWAY_IP, AP_SUBNET_MASK)) {
+            Serial.println("[NET] AVVISO: softAPConfig ha restituito false, verifica netif AP.");
+        }
+
+        // Avvia Captive Portal DNS sulla porta 53 per indirizzare tutti i domini a 192.168.4.1
+        s_dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+        s_dnsServer.start(CAPTIVE_DNS_PORT, "*", AP_LOCAL_IP);
+
         _apActive = true;
-        Serial.printf("[NET] Access Point attivo! Connettiti a '%s' e apri http://%s (oppure http://%s.local)\n",
-                      FALLBACK_AP_SSID, WiFi.softAPIP().toString().c_str(), MDNS_HOSTNAME);
+        Serial.printf("[NET] Hotspot attivo! SSID: '%s' | IP/Gateway/DHCP: %s | Canale: %u\n",
+                      FALLBACK_AP_SSID, WiFi.softAPIP().toString().c_str(), AP_FIXED_CHANNEL);
+        Serial.printf("[NET] Captive Portal DNS attivo -> apri http://%s (o http://%s.local)\n",
+                      WiFi.softAPIP().toString().c_str(), MDNS_HOSTNAME);
         setupMdnsAndNtp();
     } else {
         Serial.println("[NET] ERRORE CRITICO: Impossibile avviare il Fallback Access Point!");
@@ -131,11 +297,29 @@ void NetworkManager::requestReconnect() {
 
 void NetworkManager::networkTask(void* pvParameters) {
     uint32_t lastRetryMs = millis();
+    uint32_t disconnectStartMs = 0;
 
     for (;;) {
+        if (_apActive) {
+            s_dnsServer.processNextRequest();
+        }
+
+        // Timeout di sicurezza per eventuali scansioni asincrone mai lette dal client
+        if (_scanInProgress) {
+            int16_t sc = WiFi.scanComplete();
+            if (sc >= 0 && (millis() - _lastScanTimestampMs >= 15000)) {
+                _scanInProgress = false;
+                WiFi.scanDelete();
+            } else if (sc == WIFI_SCAN_FAILED && (millis() - _lastScanTimestampMs >= 15000)) {
+                _scanInProgress = false;
+            }
+        }
+
         if (_reconnectRequested) {
             _reconnectRequested = false;
+            disconnectStartMs = 0;
             Serial.println("[NET] Riconnessione Wi-Fi richiesta dall'utente...");
+            vTaskDelay(pdMS_TO_TICKS(400)); // Lascia completare l'invio della risposta HTTP alla Dashboard
             WiFi.disconnect(false);
             vTaskDelay(pdMS_TO_TICKS(200));
             if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
@@ -147,35 +331,64 @@ void NetworkManager::networkTask(void* pvParameters) {
         }
 
         wl_status_t status = WiFi.status();
+        bool scanGraceActive = _scanInProgress ||
+                               (WiFi.scanComplete() == WIFI_SCAN_RUNNING) ||
+                               (_lastScanTimestampMs > 0 && (millis() - _lastScanTimestampMs < 5000));
+
         if (status == WL_CONNECTED) {
+            disconnectStartMs = 0;
             if (!_staConnected) {
                 _staConnected = true;
                 Serial.printf("[NET] Connessione Wi-Fi ripristinata! IP: %s\n",
                               WiFi.localIP().toString().c_str());
                 setupMdnsAndNtp();
                 if (_apActive) {
+                    s_dnsServer.stop();
                     WiFi.softAPdisconnect(true);
                     WiFi.mode(WIFI_STA);
+                    WiFi.setAutoReconnect(true);
                     _apActive = false;
                 }
             }
         } else {
             if (_staConnected) {
-                _staConnected = false;
-                Serial.println("[NET] Connessione Wi-Fi persa. Attivazione AP di emergenza...");
-                startFallbackAP();
-            }
+                if (scanGraceActive) {
+                    // Durante o subito dopo una scansione Wi-Fi non consideriamo caduta la connessione
+                    disconnectStartMs = 0;
+                } else {
+                    if (disconnectStartMs == 0) {
+                        disconnectStartMs = millis();
+                    } else if (millis() - disconnectStartMs >= 8000) {
+                        disconnectStartMs = 0;
+                        _staConnected = false;
+                        Serial.println("[NET] Connessione Wi-Fi persa (>8s). Attivazione AP di emergenza...");
+                        startFallbackAP();
+                        lastRetryMs = millis();
+                    }
+                }
+            } else {
+                disconnectStartMs = 0;
 
-            // Se siamo in fallback AP ma c'è un SSID salvato, riprova silenziosamente ogni 60 secondi
-            SystemConfig cfg = ConfigManager::getConfig();
-            if (strlen(cfg.wifiSsid) > 0 && (millis() - lastRetryMs >= 60000)) {
-                lastRetryMs = millis();
-                Serial.printf("[NET] Tentativo periodico di riconnessione a '%s'...\n", cfg.wifiSsid);
-                WiFi.begin(cfg.wifiSsid, cfg.wifiPassword);
+                // Riprova ogni 60s SOLO se nessun utente è attualmente collegato all'Hotspot ChronoRing-Setup,
+                // nessuna scansione manuale è in corso e la rete salvata torna visibile.
+                if (!scanGraceActive && (!_apActive || WiFi.softAPgetStationNum() == 0)) {
+                    SystemConfig cfg = ConfigManager::getConfig();
+                    if (strlen(cfg.wifiSsid) > 0 && (millis() - lastRetryMs >= 60000)) {
+                        lastRetryMs = millis();
+                        if (isSavedNetworkVisible(cfg.wifiSsid)) {
+                            Serial.printf("[NET] Rete '%s' nuovamente visibile: tentativo di riconnessione...\n", cfg.wifiSsid);
+                            if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
+                                setupMdnsAndNtp();
+                            } else {
+                                startFallbackAP();
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(_apActive ? 50 : 1000));
     }
 }
 

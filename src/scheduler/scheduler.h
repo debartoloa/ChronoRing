@@ -28,7 +28,7 @@ public:
     static bool getNextBellDetails(String& eventLabel, String& countdownStr);
 
     /**
-     * @brief Restituisce l'orario dell'ultimo suono attivato automaticamente ("HH:MM" o "Nessuno").
+     * @brief Restituisce l'orario e l'etichetta dell'ultimo suono attivato automaticamente ("HH:MM (Etichetta)" o "Nessuno").
      */
     static String getLastTriggeredString();
 
@@ -37,9 +37,8 @@ private:
     static int _lastTriggeredYday;
     static int _lastTriggeredHour;
     static int _lastTriggeredMin;
-    static char _lastTriggeredStr[16];
+    static char _lastTriggeredStr[48];
 
     static void schedulerTask(void* pvParameters);
     static void checkAndTriggerBell();
-    static const char* getBellEventName(uint8_t hour, uint8_t minute);
 };

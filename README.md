@@ -38,7 +38,7 @@ All'avvio, il firmware esegue una scansione hardware automatica sul bus I2C (`0x
 - **🌐 Web Dashboard & Aggiornamento Firmware OTA**
   - Pannello di controllo responsivo protetto da password amministratore, accessibile tramite indirizzo locale **`http://chronoring.local`** (mDNS) o IP.
   - Gestione in tempo reale di: *Suona Ora (Test Manuale)*, *Sospensione*, *Tabella Orari*, *Durata Impulso Relè*, *Credenziali Wi-Fi*, *Logo e Nome della Scuola*.
-  - **Fallback Access Point automatico**: se la rete Wi-Fi non è configurata o non è raggiungibile entro 20 secondi, ChronoRing genera la rete Wi-Fi di emergenza **`ChronoRing-Setup`** (password: `admin123`) su `http://192.168.4.1`.
+  - **Fallback Access Point automatico**: se la rete Wi-Fi configurata non viene rilevata nell'etere (verifica preventiva con pre-scan), ChronoRing avvia subito l'hotspot aperto **`ChronoRing-Setup`** (senza password) su IP statico **`192.168.4.1`**, con DHCP Server e **Captive Portal** integrato per configurare la nuova rete in pochi secondi.
   - Pagina dedicata **`/update`** per l'aggiornamento del firmware **Over-The-Air (OTA)** direttamente dal browser caricando il file `.bin`.
 - **🎨 Interfaccia Touch LVGL v8 & Standby Personalizzabile**
   - Layout scuro ad alto contrasto (`320x240` Landscape) con orologio digitale grande, countdown prossima campanella, widget meteo **Open-Meteo** con icone vettoriali moderne e configurazione Wi-Fi da schermo.
@@ -146,8 +146,8 @@ Esp32-Campanella/
 ## 🔐 Credenziali Predefinite
 
 - **Access Point di Emergenza Wi-Fi**:
-  - **SSID**: `ChronoRing-Setup`
-  - **Password**: `admin123`
-  - **URL**: `http://192.168.4.1`
+  - **SSID**: `ChronoRing-Setup` *(rete aperta, senza password)*
+  - **IP / DHCP Server**: `192.168.4.1` *(assegna automaticamente `192.168.4.2+` ai client)*
+  - **URL**: `http://192.168.4.1` *(o apertura automatica tramite Captive Portal)*
 - **Dashboard Web (`http://chronoring.local`)**:
   - **Password Amministratore di default**: `admin` *(modificabile dalla Dashboard)*

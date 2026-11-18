@@ -8,7 +8,7 @@ TaskHandle_t Scheduler::_schedulerTaskHandle = nullptr;
 int Scheduler::_lastTriggeredYday = -1;
 int Scheduler::_lastTriggeredHour = -1;
 int Scheduler::_lastTriggeredMin  = -1;
-char Scheduler::_lastTriggeredStr[16] = "Nessuno";
+char Scheduler::_lastTriggeredStr[48] = "Nessuno";
 
 void Scheduler::begin() {
     if (_schedulerTaskHandle == nullptr) {
@@ -31,18 +31,6 @@ void Scheduler::schedulerTask(void* pvParameters) {
         checkAndTriggerBell();
         vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(1000));
     }
-}
-
-const char* Scheduler::getBellEventName(uint8_t hour, uint8_t minute) {
-    if (hour == 8  && minute == 10) return "Ingresso";
-    if (hour == 9  && minute == 10) return "2a Ora";
-    if (hour == 10 && minute == 10) return "3a Ora";
-    if (hour == 10 && minute == 55) return "Ricreazione";
-    if (hour == 11 && minute == 5)  return "Fine Ricr.";
-    if (hour == 11 && minute == 10) return "4a Ora";
-    if (hour == 12 && minute == 10) return "5a Ora";
-    if (hour == 13 && minute == 0)  return "Uscita";
-    return "Campanella";
 }
 
 void Scheduler::checkAndTriggerBell() {
@@ -90,13 +78,15 @@ void Scheduler::checkAndTriggerBell() {
         if (item.hour == static_cast<uint8_t>(timeinfo.tm_hour) &&
             item.minute == static_cast<uint8_t>(timeinfo.tm_min)) {
 
+            const char* lbl = (strlen(item.label) > 0) ? item.label : "Campanella";
             _lastTriggeredYday = timeinfo.tm_yday;
             _lastTriggeredHour = timeinfo.tm_hour;
             _lastTriggeredMin  = timeinfo.tm_min;
-            snprintf(_lastTriggeredStr, sizeof(_lastTriggeredStr), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+            snprintf(_lastTriggeredStr, sizeof(_lastTriggeredStr), "%02d:%02d (%s)",
+                     timeinfo.tm_hour, timeinfo.tm_min, lbl);
 
-            Serial.printf("[SCHEDULER] >>> SQUILLO AUTOMATICO DELLE %02d:%02d (Durata: %u ms) <<<\n",
-                          timeinfo.tm_hour, timeinfo.tm_min, cfg.relayPulseMs);
+            Serial.printf("[SCHEDULER] >>> SQUILLO AUTOMATICO '%s' DELLE %02d:%02d (Durata: %u ms) <<<\n",
+                          lbl, timeinfo.tm_hour, timeinfo.tm_min, cfg.relayPulseMs);
 
             RelayController::trigger(cfg.relayPulseMs);
             break;
@@ -130,6 +120,7 @@ bool Scheduler::getNextBellDetails(String& eventLabel, String& countdownStr) {
     int currentSecOfDay = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
     int bestSecOfDay = 24 * 3600 + 1;
     uint8_t bestH = 0, bestM = 0;
+    char bestLabel[32] = "Campanella";
 
     for (const auto& item : cfg.schedule) {
         if (!item.enabled) continue;
@@ -140,13 +131,15 @@ bool Scheduler::getNextBellDetails(String& eventLabel, String& countdownStr) {
             bestSecOfDay = itemSecOfDay;
             bestH = item.hour;
             bestM = item.minute;
+            const char* lbl = (strlen(item.label) > 0) ? item.label : "Campanella";
+            strlcpy(bestLabel, lbl, sizeof(bestLabel));
         }
     }
 
     if (bestSecOfDay <= 24 * 3600) {
-        char labelBuf[36];
+        char labelBuf[48];
         snprintf(labelBuf, sizeof(labelBuf), "%s %02u:%02u",
-                 getBellEventName(bestH, bestM), bestH, bestM);
+                 bestLabel, bestH, bestM);
         eventLabel = String(labelBuf);
 
         int diffSec = bestSecOfDay - currentSecOfDay;
