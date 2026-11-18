@@ -21,6 +21,8 @@ struct BellScheduleItem {
 struct SystemConfig {
     char wifiSsid[64];
     char wifiPassword[64];
+    char apSsid[32];
+    char apPassword[64];
     char webPassword[32];
     char schoolName[64];
     uint32_t relayPulseMs;
@@ -32,6 +34,8 @@ class ConfigManager {
 public:
     static constexpr const char* CONFIG_FILE_PATH = "/config.json";
     static constexpr const char* SCHOOL_LOGO_PATH = "/school_logo.bin";
+    static constexpr const char* DEFAULT_AP_SSID = "ChronoRing-Setup";
+    static constexpr const char* DEFAULT_AP_PASSWORD = ""; // Vuoto = AP aperto di fabbrica
     static constexpr const char* DEFAULT_WEB_PASSWORD = "admin";
     static constexpr uint32_t DEFAULT_RELAY_PULSE_MS = 3000;
     static constexpr uint32_t MAX_RELAY_PULSE_MS = 10000; // Hard cap di sicurezza: 10s
@@ -52,6 +56,8 @@ public:
     static bool setWebPassword(const char* newPassword);
 
     static bool setWiFiCredentials(const char* ssid, const char* password);
+    static bool setApCredentials(const char* apSsid, const char* apPassword);
+    static bool resetToFactoryDefaults();
 
     static bool setSchoolName(const char* schoolName);
     static String getSchoolName();

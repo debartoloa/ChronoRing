@@ -31,6 +31,11 @@ public:
     static void requestReconnect();
 
     /**
+     * @brief Richiede il riavvio dell'Access Point per applicare nuovo SSID o Password AP.
+     */
+    static void requestApRestart();
+
+    /**
      * @brief Restituisce true se l'orologio RTC interno è sincronizzato via NTP (anno >= 2024).
      */
     static bool isTimeSynced();
@@ -84,6 +89,7 @@ private:
     static volatile bool _mdnsStarted;
     static volatile bool _ntpConfigured;
     static volatile bool _reconnectRequested;
+    static volatile bool _apRestartRequested;
     static volatile bool _scanInProgress;
     static volatile uint32_t _lastScanTimestampMs;
     static TaskHandle_t _netTaskHandle;

@@ -8,6 +8,8 @@ bool ConfigManager::_initialized = false;
 
 constexpr const char* ConfigManager::CONFIG_FILE_PATH;
 constexpr const char* ConfigManager::SCHOOL_LOGO_PATH;
+constexpr const char* ConfigManager::DEFAULT_AP_SSID;
+constexpr const char* ConfigManager::DEFAULT_AP_PASSWORD;
 constexpr const char* ConfigManager::DEFAULT_WEB_PASSWORD;
 constexpr uint32_t ConfigManager::DEFAULT_RELAY_PULSE_MS;
 constexpr uint32_t ConfigManager::MAX_RELAY_PULSE_MS;
@@ -23,6 +25,8 @@ uint32_t ConfigManager::clampRelayPulse(uint32_t pulseMs) {
 void ConfigManager::loadDefaults(SystemConfig& cfg) {
     cfg.wifiSsid[0] = '\0';
     cfg.wifiPassword[0] = '\0';
+    strlcpy(cfg.apSsid, DEFAULT_AP_SSID, sizeof(cfg.apSsid));
+    strlcpy(cfg.apPassword, DEFAULT_AP_PASSWORD, sizeof(cfg.apPassword));
     strlcpy(cfg.webPassword, DEFAULT_WEB_PASSWORD, sizeof(cfg.webPassword));
     cfg.schoolName[0] = '\0';
     cfg.relayPulseMs = DEFAULT_RELAY_PULSE_MS;
@@ -120,6 +124,18 @@ bool ConfigManager::loadFromFileInternal() {
     strlcpy(_config.wifiSsid, ssid, sizeof(_config.wifiSsid));
     strlcpy(_config.wifiPassword, wifiPwd, sizeof(_config.wifiPassword));
 
+    const char* apS = doc["ap_ssid"] | DEFAULT_AP_SSID;
+    if (strlen(apS) == 0) {
+        apS = DEFAULT_AP_SSID;
+    }
+    const char* apP = doc["ap_password"] | DEFAULT_AP_PASSWORD;
+    if (strlen(apP) > 0 && strlen(apP) < 8) {
+        // Standard WPA2 richiede minimo 8 caratteri; se invalida torna AP aperto
+        apP = "";
+    }
+    strlcpy(_config.apSsid, apS, sizeof(_config.apSsid));
+    strlcpy(_config.apPassword, apP, sizeof(_config.apPassword));
+
     const char* pwd = doc["web_password"] | DEFAULT_WEB_PASSWORD;
     strlcpy(_config.webPassword, pwd, sizeof(_config.webPassword));
 
@@ -167,6 +183,8 @@ bool ConfigManager::saveToFileInternal(const SystemConfig& cfg) {
 
     doc["wifi_ssid"] = cfg.wifiSsid;
     doc["wifi_password"] = cfg.wifiPassword;
+    doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : DEFAULT_AP_SSID;
+    doc["ap_password"] = cfg.apPassword;
     doc["web_password"] = cfg.webPassword;
     doc["school_name"] = cfg.schoolName;
     doc["relay_pulse_ms"] = clampRelayPulse(cfg.relayPulseMs);
@@ -300,6 +318,49 @@ bool ConfigManager::setWiFiCredentials(const char* ssid, const char* password) {
     return ok;
 }
 
+bool ConfigManager::setApCredentials(const char* apSsid, const char* apPassword) {
+    if (!apSsid || !_mutex) return false;
+
+    String cleanSsid = String(apSsid);
+    cleanSsid.trim();
+    if (cleanSsid.length() == 0 || cleanSsid.length() > 31) {
+        return false;
+    }
+
+    size_t passLen = apPassword ? strlen(apPassword) : 0;
+    if (passLen > 0 && (passLen < 8 || passLen > 63)) {
+        return false;
+    }
+
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        strlcpy(_config.apSsid, cleanSsid.c_str(), sizeof(_config.apSsid));
+        if (passLen > 0) {
+            strlcpy(_config.apPassword, apPassword, sizeof(_config.apPassword));
+        } else {
+            _config.apPassword[0] = '\0';
+        }
+        ok = saveToFileInternal(_config);
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+bool ConfigManager::resetToFactoryDefaults() {
+    if (!_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        if (LittleFS.exists(SCHOOL_LOGO_PATH)) {
+            LittleFS.remove(SCHOOL_LOGO_PATH);
+        }
+        loadDefaults(_config);
+        ok = saveToFileInternal(_config);
+        xSemaphoreGive(_mutex);
+    }
+    Serial.printf("[CONFIG] Ripristino impostazioni di fabbrica: %s\n", ok ? "OK" : "ERRORE");
+    return ok;
+}
+
 bool ConfigManager::setSchoolName(const char* schoolName) {
     if (!schoolName || !_mutex) return false;
     bool ok = false;
@@ -350,6 +411,9 @@ void ConfigManager::printDiagnostics() {
     Serial.printf(" - Nome Istituto      : %s\n", strlen(cfg.schoolName) > 0 ? cfg.schoolName : "<Non impostato>");
     Serial.printf(" - Logo Scuola        : %s\n", hasSchoolLogo() ? "Presente (/school_logo.bin)" : "Non caricato");
     Serial.printf(" - Wi-Fi SSID         : %s\n", strlen(cfg.wifiSsid) > 0 ? cfg.wifiSsid : "<Non configurato - Fallback AP>");
+    Serial.printf(" - Hotspot AP SSID    : %s (%s)\n",
+                  strlen(cfg.apSsid) > 0 ? cfg.apSsid : DEFAULT_AP_SSID,
+                  strlen(cfg.apPassword) >= 8 ? "PROTETTO WPA2" : "APERTO");
     Serial.printf(" - Password Web (len) : %u caratteri\n", strlen(cfg.webPassword));
     Serial.printf(" - Durata Impulso Relè: %u ms (Hard Cap: %u ms)\n", cfg.relayPulseMs, MAX_RELAY_PULSE_MS);
     Serial.printf(" - Stato Sospensione  : %s\n", cfg.suspended ? "SOSPESO (Campanella Disattivata)" : "ATTIVO");

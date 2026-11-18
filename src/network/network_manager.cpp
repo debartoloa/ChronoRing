@@ -19,6 +19,7 @@ volatile bool NetworkManager::_apActive = false;
 volatile bool NetworkManager::_mdnsStarted = false;
 volatile bool NetworkManager::_ntpConfigured = false;
 volatile bool NetworkManager::_reconnectRequested = false;
+volatile bool NetworkManager::_apRestartRequested = false;
 volatile bool NetworkManager::_scanInProgress = false;
 volatile uint32_t NetworkManager::_lastScanTimestampMs = 0;
 TaskHandle_t NetworkManager::_netTaskHandle = nullptr;
@@ -238,7 +239,12 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
 void NetworkManager::startFallbackAP() {
     if (_apActive) return;
 
-    Serial.printf("[NET] Avvio Access Point di emergenza: SSID='%s' (AP aperto)...\n", FALLBACK_AP_SSID);
+    SystemConfig cfg = ConfigManager::getConfig();
+    const char* apSsid = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : FALLBACK_AP_SSID;
+    const char* apPass = (strlen(cfg.apPassword) >= 8) ? cfg.apPassword : nullptr;
+
+    Serial.printf("[NET] Avvio Access Point di emergenza: SSID='%s' (%s)...\n",
+                  apSsid, apPass ? "PROTETTO WPA2" : "AP aperto");
 
     // CRITICO: Ferma qualsiasi ricerca STA residua per evitare channel-hopping che rompe il DHCP su AP
     WiFi.setAutoReconnect(false);
@@ -248,8 +254,7 @@ void NetworkManager::startFallbackAP() {
     WiFi.mode(WIFI_AP_STA);
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    const char* apPass = (strlen(FALLBACK_AP_PASS) > 0) ? FALLBACK_AP_PASS : nullptr;
-    bool ok = WiFi.softAP(FALLBACK_AP_SSID, apPass, AP_FIXED_CHANNEL, 0, 4);
+    bool ok = WiFi.softAP(apSsid, apPass, AP_FIXED_CHANNEL, 0, 4);
     if (ok) {
         vTaskDelay(pdMS_TO_TICKS(100));
         // Imposta esplicitamente IP 192.168.4.1 e avvia il DHCP Server interno (range 192.168.4.2 - 192.168.4.12)
@@ -263,7 +268,7 @@ void NetworkManager::startFallbackAP() {
 
         _apActive = true;
         Serial.printf("[NET] Hotspot attivo! SSID: '%s' | IP/Gateway/DHCP: %s | Canale: %u\n",
-                      FALLBACK_AP_SSID, WiFi.softAPIP().toString().c_str(), AP_FIXED_CHANNEL);
+                      apSsid, WiFi.softAPIP().toString().c_str(), AP_FIXED_CHANNEL);
         Serial.printf("[NET] Captive Portal DNS attivo -> apri http://%s (o http://%s.local)\n",
                       WiFi.softAPIP().toString().c_str(), MDNS_HOSTNAME);
         setupMdnsAndNtp();
@@ -295,6 +300,10 @@ void NetworkManager::requestReconnect() {
     _reconnectRequested = true;
 }
 
+void NetworkManager::requestApRestart() {
+    _apRestartRequested = true;
+}
+
 void NetworkManager::networkTask(void* pvParameters) {
     uint32_t lastRetryMs = millis();
     uint32_t disconnectStartMs = 0;
@@ -312,6 +321,19 @@ void NetworkManager::networkTask(void* pvParameters) {
                 WiFi.scanDelete();
             } else if (sc == WIFI_SCAN_FAILED && (millis() - _lastScanTimestampMs >= 15000)) {
                 _scanInProgress = false;
+            }
+        }
+
+        if (_apRestartRequested) {
+            _apRestartRequested = false;
+            if (_apActive) {
+                Serial.println("[NET] Riavvio Hotspot Access Point con le nuove credenziali...");
+                vTaskDelay(pdMS_TO_TICKS(400)); // Lascia completare la risposta HTTP prima di chiudere il vecchio AP
+                s_dnsServer.stop();
+                WiFi.softAPdisconnect(true);
+                _apActive = false;
+                vTaskDelay(pdMS_TO_TICKS(150));
+                startFallbackAP();
             }
         }
 
@@ -471,7 +493,7 @@ String NetworkManager::getNetworkModeString() {
         return String("Wi-Fi STA (") + WiFi.SSID() + ")";
     }
     if (_apActive) {
-        return String("Access Point (") + FALLBACK_AP_SSID + ")";
+        return String("Access Point (") + WiFi.softAPSSID() + ")";
     }
     return "Disconnesso";
 }

@@ -5,6 +5,15 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-18
+
+### Added
+- **Sicurezza Hotspot Access Point (SSID & Password WPA2 Personalizzabili)**:
+  - Aggiunti `ap_ssid` e `ap_password` in `SystemConfig` / `/config.json` con validazione WPA2 (almeno 8 caratteri oppure vuoto per AP aperto).
+  - Nuova sezione nella Dashboard Web e endpoint `POST /api/ap-config` per personalizzare il nome e la password dell'hotspot integrato con riavvio automatico dell'AP (`NetworkManager::requestApRestart()`).
+- **Ripristino Impostazioni di Fabbrica (Factory Reset)**:
+  - Aggiunto pulsante con doppia conferma nella Dashboard Web ed endpoint `POST /api/factory-reset` (`ConfigManager::resetToFactoryDefaults()`) che elimina logo/personalizzazioni, ripristina orari e credenziali di fabbrica (`ChronoRing-Setup` aperto, password web `admin`) e riavvia in sicurezza il dispositivo.
+
 ## [1.1.0] - 2026-11-18
 
 ### Added

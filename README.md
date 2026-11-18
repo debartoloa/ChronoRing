@@ -38,7 +38,8 @@ All'avvio, il firmware esegue una scansione hardware automatica sul bus I2C (`0x
 - **🌐 Web Dashboard & Aggiornamento Firmware OTA**
   - Pannello di controllo responsivo protetto da password amministratore, accessibile tramite indirizzo locale **`http://chronoring.local`** (mDNS) o IP.
   - Gestione in tempo reale di: *Suona Ora (Test Manuale)*, *Sospensione*, *Tabella Orari*, *Durata Impulso Relè*, *Credenziali Wi-Fi*, *Logo e Nome della Scuola*.
-  - **Fallback Access Point automatico**: se la rete Wi-Fi configurata non viene rilevata nell'etere (verifica preventiva con pre-scan), ChronoRing avvia subito l'hotspot aperto **`ChronoRing-Setup`** (senza password) su IP statico **`192.168.4.1`**, con DHCP Server e **Captive Portal** integrato per configurare la nuova rete in pochi secondi.
+  - **Fallback Access Point automatico**: se la rete Wi-Fi configurata non viene rilevata nell'etere (verifica preventiva con pre-scan), ChronoRing avvia subito l'hotspot **`ChronoRing-Setup`** (aperto di fabbrica, SSID e password WPA2 personalizzabili dalla Dashboard) su IP statico **`192.168.4.1`**, con DHCP Server e **Captive Portal** integrato.
+  - **Ripristino di Fabbrica (Factory Reset)** e gestione completa di: *Suona Ora*, *Sospensione*, *Tabella Orari con etichette*, *Scansione reti Wi-Fi popup*, *Durata Impulso Relè*, *Logo e Nome della Scuola*.
   - Pagina dedicata **`/update`** per l'aggiornamento del firmware **Over-The-Air (OTA)** direttamente dal browser caricando il file `.bin`.
 - **🎨 Interfaccia Touch LVGL v8 & Standby Personalizzabile**
   - Layout scuro ad alto contrasto (`320x240` Landscape) con orologio digitale grande, countdown prossima campanella, widget meteo **Open-Meteo** con icone vettoriali moderne e configurazione Wi-Fi da schermo.

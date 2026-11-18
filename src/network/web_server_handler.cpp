@@ -319,6 +319,37 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
       <button class="btn btn-cyan" onclick="saveWiFi()">💾 Salva e Connetti Wi-Fi</button>
     </div>
   </div>
+
+  <!-- SICUREZZA HOTSPOT AP & RIPRISTINO IMPOSTAZIONI DI FABBRICA -->
+  <div class="card card-full">
+    <h2>
+      <span>🛡️ Sicurezza Hotspot Dispositivo (AP) &amp; Ripristino</span>
+      <span id="apSecBadge" class="badge badge-warn">Verifica...</span>
+    </h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;align-items:start;">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>SSID Hotspot Dispositivo (max 31 caratteri)</label>
+          <input type="text" id="apSsid" maxlength="31" placeholder="Es. ChronoRing-Setup">
+        </div>
+        <div class="form-group">
+          <label>Password Hotspot WPA2 (min 8 caratteri — lascia vuoto per AP aperto)</label>
+          <input type="password" id="apPwd" maxlength="63" placeholder="Minimo 8 caratteri oppure vuoto (aperto)...">
+        </div>
+        <button class="btn btn-cyan" onclick="saveApConfig()">💾 Salva Configurazione Hotspot AP</button>
+      </div>
+
+      <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.32);border-radius:12px;padding:16px;">
+        <div style="font-weight:700;color:#fca5a5;margin-bottom:6px;">⚠️ Ripristino Impostazioni di Fabbrica</div>
+        <div style="font-size:0.82rem;color:var(--muted);line-height:1.45;margin-bottom:14px;">
+          Cancella reti Wi-Fi salvate, personalizzazione Hotspot AP, nome/logo dell'istituto, password Web e riporta orari e durata relè ai valori predefiniti (password: <code>admin</code>, hotspot: <code>ChronoRing-Setup</code> aperto).
+        </div>
+        <button class="btn btn-danger" style="width:100%;justify-content:center;padding:12px;" id="btnFactoryReset" onclick="factoryResetDevice()">
+          🔄 RIPRISTINA IMPOSTAZIONI DI FABBRICA
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="modal-overlay" id="wifiModal" onclick="if(event.target===this)closeWifiModal()">
@@ -392,6 +423,12 @@ async function loadConfig() {
   document.getElementById('chkSuspended').checked = d.suspended;
   document.getElementById('pulseMs').value = d.relay_pulse_ms;
   document.getElementById('wifiSsid').value = d.wifi_ssid || '';
+  document.getElementById('apSsid').value = d.ap_ssid || 'ChronoRing-Setup';
+  const apBadge = document.getElementById('apSecBadge');
+  if (apBadge) {
+    apBadge.textContent = d.ap_has_password ? '🔒 AP PROTETTO WPA2' : '🔓 AP APERTO (NESSUNA PASSWORD)';
+    apBadge.className = 'badge ' + (d.ap_has_password ? 'badge-ok' : 'badge-warn');
+  }
   document.getElementById('schoolName').value = d.school_name || '';
   updateLogoBadge(d.has_school_logo);
   scheduleData = d.schedule || [];
@@ -683,6 +720,54 @@ async function saveWiFi() {
   showToast(d.message, !r.ok);
 }
 
+async function saveApConfig() {
+  const ap_ssid = document.getElementById('apSsid').value.trim();
+  const ap_password = document.getElementById('apPwd').value;
+  if (!ap_ssid) {
+    showToast('Inserisci un SSID valido per l\'Hotspot AP.', true);
+    return;
+  }
+  if (ap_password.length > 0 && ap_password.length < 8) {
+    showToast('La password WPA2 deve avere almeno 8 caratteri (oppure resta vuota).', true);
+    return;
+  }
+  const r = await fetch('/api/ap-config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ap_ssid, ap_password})
+  });
+  const d = await r.json();
+  showToast(d.message, !r.ok);
+  if (r.ok) {
+    document.getElementById('apPwd').value = '';
+    loadConfig();
+  }
+}
+
+async function factoryResetDevice() {
+  if (!confirm('ATTENZIONE: Vuoi davvero cancellare tutte le impostazioni (Wi-Fi, Hotspot, Password, Orari, Logo) e tornare ai valori di fabbrica?')) {
+    return;
+  }
+  if (!confirm('Conferma definitiva: il dispositivo verrà ripristinato e riavviato immediatamente. Procedere?')) {
+    return;
+  }
+  const btn = document.getElementById('btnFactoryReset');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/factory-reset', {method: 'POST'});
+    const d = await r.json();
+    showToast(d.message, !r.ok);
+    if (r.ok) {
+      setTimeout(() => { window.location.href = '/login'; }, 6000);
+    } else {
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.disabled = false;
+    showToast('Errore di rete durante il ripristino.', true);
+  }
+}
+
 loadConfig();
 fetchStatus();
 setInterval(fetchStatus, 1000);
@@ -909,6 +994,8 @@ void WebServerHandler::setupRoutes() {
         SystemConfig cfg = ConfigManager::getConfig();
         JsonDocument doc;
         doc["wifi_ssid"] = cfg.wifiSsid;
+        doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : ConfigManager::DEFAULT_AP_SSID;
+        doc["ap_has_password"] = (strlen(cfg.apPassword) >= 8);
         doc["school_name"] = cfg.schoolName;
         doc["has_school_logo"] = ConfigManager::hasSchoolLogo();
         doc["relay_pulse_ms"] = cfg.relayPulseMs;
@@ -1177,6 +1264,65 @@ void WebServerHandler::setupRoutes() {
             }
         }
     );
+
+    // 16. API CONFIGURAZIONE SSID & PASSWORD HOTSPOT ACCESS POINT (POST /api/ap-config)
+    _server.on("/api/ap-config", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isAuthenticated(request)) {
+                request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            const char* apSsid = doc["ap_ssid"] | "";
+            const char* apPwd  = doc["ap_password"] | "";
+
+            size_t pwdLen = strlen(apPwd);
+            if (strlen(apSsid) == 0 || strlen(apSsid) > 31) {
+                request->send(400, "application/json", "{\"message\":\"SSID Hotspot non valido (1-31 caratteri).\"}");
+                return;
+            }
+            if (pwdLen > 0 && pwdLen < 8) {
+                request->send(400, "application/json", "{\"message\":\"La password WPA2 deve contenere almeno 8 caratteri (o resta vuota).\"}");
+                return;
+            }
+
+            if (ConfigManager::setApCredentials(apSsid, apPwd)) {
+                NetworkManager::requestApRestart();
+                request->send(200, "application/json",
+                              pwdLen >= 8 ? "{\"message\":\"✅ Hotspot AP salvato e protetto (WPA2)!\"}"
+                                          : "{\"message\":\"✅ Hotspot AP salvato (rete aperta)!\"}" );
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore salvataggio configurazione Hotspot AP\"}");
+            }
+        }
+    );
+
+    // 17. API RIPRISTINO IMPOSTAZIONI DI FABBRICA (POST /api/factory-reset)
+    _server.on("/api/factory-reset", HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (!isAuthenticated(request)) {
+            request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+            return;
+        }
+        RelayController::forceOff();
+        if (ConfigManager::resetToFactoryDefaults()) {
+            AsyncWebServerResponse* response = request->beginResponse(
+                200, "application/json",
+                "{\"message\":\"🔄 Ripristino di fabbrica completato! Riavvio in corso...\"}"
+            );
+            response->addHeader("Connection", "close");
+            request->send(response);
+            Serial.println("[WEB] Factory Reset eseguito su richiesta amministratore. Riavvio tra 1.5s...");
+            scheduleRestart(1500);
+        } else {
+            request->send(500, "application/json", "{\"message\":\"Errore durante il ripristino di fabbrica.\"}");
+        }
+    });
 
     // 15. PAGINA E HANDLER AGGIORNAMENTO FIRMWARE OTA (/update)
     _server.on("/update", HTTP_GET, [](AsyncWebServerRequest* request) {
