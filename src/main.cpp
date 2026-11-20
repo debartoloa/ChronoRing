@@ -88,7 +88,7 @@ void setup() {
     Serial.printf(" - Dashboard Web : http://%s.local (oppure http://%s)\n",
                   NetworkManager::MDNS_HOSTNAME, NetworkManager::getIpAddress().c_str());
     Serial.printf(" - Pagina OTA    : http://%s.local/update\n", NetworkManager::MDNS_HOSTNAME);
-    Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'p'=Diagnostica");
+    Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'a'=Attiva AP, 'p'=Diagnostica");
     Serial.println("==================================================");
 }
 
@@ -113,6 +113,12 @@ void loop() {
             case 'W': {
                 Serial.println("[TEST] Richiesta aggiornamento immediato Open-Meteo...");
                 WeatherService::requestImmediateUpdate();
+                break;
+            }
+            case 'a':
+            case 'A': {
+                Serial.println("[NET] Comando manuale: richiesta avvio Hotspot AP...");
+                NetworkManager::requestManualApStart();
                 break;
             }
             case 'p':

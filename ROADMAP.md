@@ -13,9 +13,9 @@ Poiché ChronoRing opera collegato alla rete Wi-Fi dell'istituto scolastico, l'o
   - Limitazione dei tentativi errati (*rate limiting* temporaneo) su `/api/login`.
   - Token di sessione con scadenza automatica (TTL) e flag di sicurezza più restrittivi sui cookie.
 - **Accesso Web Crittografato (HTTPS / TLS Locale)**: valutare l'introduzione di certificato autofirmato locale (o supporto reverse-proxy) per cifrare password e sessioni in transito sulla LAN scolastica.
-- **Blocco / Timeout dell'Hotspot `ChronoRing-Setup`**:
-  - Garanzia di disattivazione totale dell'interfaccia SoftAP quando la scheda è connessa in modalità STA alla rete scolastica.
-  - Opzione per disabilitare o proteggere automaticamente l'AP di emergenza dopo un intervallo configurabile, evitando hotspot aperti non presidiati.
+- **Blocco / Timeout dell'Hotspot `ChronoRing-Setup`** ✅ *(Implementato in v1.3.0)*:
+  - Disattivazione totale dell'interfaccia SoftAP quando la scheda è connessa in modalità STA alla rete scolastica e blocco automatico della riapertura su cadute temporanee del router (`ap_lock_after_sta`).
+  - Spegnimento automatico dell'hotspot di emergenza dopo un intervallo di inattività configurabile (`ap_timeout_min`, default 15 minuti), evitando hotspot aperti non presidiati.
 - **Integrità Aggiornamenti OTA**: verifica firma/checksum dell'immagine `firmware.bin` prima di applicare l'aggiornamento Over-The-Air.
 
 ---
@@ -43,8 +43,8 @@ Le seguenti funzionalità sono proposte aggiuntive pensate per l'utilizzo quotid
   - Inserimento di date/intervalli di chiusura automatica (es. *Vacanze di Natale*, *Pasqua*, *Festa Patronale*) per sospendere la campanella senza interventi manuali.
 - **Modulo RTC Hardware di Backup (`DS3231` via I2C)** `[DA VALIDARE]`
   - Supporto opzionale a un modulo RTC con batteria tampone collegato al connettore I2C (GPIO 15/16): garantisce l'ora esatta e la continuità degli squilli anche in caso di blackout elettrico seguito da assenza prolungata di connessione Internet/NTP.
-- **Backup & Ripristino Configurazione (`Export / Import JSON`)** `[DA VALIDARE]`
-  - Pulsanti nella Dashboard Web per scaricare sul PC un file di backup con tutti gli orari, le etichette e le impostazioni, e ricaricarlo su un dispositivo nuovo o dopo un ripristino di fabbrica.
+- **Backup & Ripristino Configurazione (`Export / Import JSON`)** ✅ *(Implementato in v1.3.0)*
+  - Pulsanti nella Dashboard Web per scaricare sul PC un file di backup (`chronoring-backup.json`) con tutti gli orari, le etichette e le impostazioni, e ricaricarlo su un dispositivo nuovo o dopo un ripristino di fabbrica.
 - **Campanella Musicale / Annunci Audio tramite Codec `ES8311`** `[DA VALIDARE]`
   - Sfruttare il codec audio I2S `ES8311` e l'amplificatore `NS4150B` già presenti a bordo della Freenove ESP32-S3 per riprodurre un file audio/melodia `.mp3` o `.wav` (da LittleFS o MicroSD) al posto o in affiancamento al relè della campanella tradizionale.
 - **Registro Storico degli Squilli (Log Eventi)** `[DA VALIDARE]`

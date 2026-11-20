@@ -14,10 +14,13 @@ volatile bool GuiManager::_stateDirty = false;
 volatile bool GuiManager::_targetSuspendedState = false;
 volatile bool GuiManager::_brandingDirty = false;
 volatile bool GuiManager::_ringingDirty = false;
+volatile bool GuiManager::_displaySettingsDirty = false;
 bool GuiManager::_lastAppliedSuspended = false;
 bool GuiManager::_lastRelayActive = false;
 int  GuiManager::_lastRenderedWeatherCode = -999;
 bool GuiManager::_inStandby = false;
+uint32_t GuiManager::_displayTimeoutMs = GuiManager::STANDBY_TIMEOUT_MS;
+bool GuiManager::_displaySleepOff = false;
 
 uint8_t*     GuiManager::_logoPixelBuf = nullptr;
 lv_img_dsc_t GuiManager::_logoImgDsc   = {};
@@ -55,6 +58,7 @@ lv_obj_t* GuiManager::_lblStandbyDate    = nullptr;
 constexpr uint32_t GuiManager::STANDBY_TIMEOUT_MS;
 constexpr uint8_t  GuiManager::BRIGHTNESS_ACTIVE;
 constexpr uint8_t  GuiManager::BRIGHTNESS_STANDBY;
+constexpr uint8_t  GuiManager::BRIGHTNESS_OFF;
 
 // ============================================================================
 // FUNZIONI DI STATO GLOBALI DISACCOPPIATE (PROTETTI DA g_has_display)
@@ -107,6 +111,13 @@ void GuiManager::requestBrandingReload() {
     _brandingDirty = true;
 }
 
+void GuiManager::requestDisplaySettingsReload() {
+    if (!g_has_display) {
+        return;
+    }
+    _displaySettingsDirty = true;
+}
+
 bool GuiManager::begin() {
     bool initialSuspended = ConfigManager::isSuspended();
     updateOnboardRgbLed(initialSuspended);
@@ -119,6 +130,8 @@ bool GuiManager::begin() {
 
     _targetSuspendedState = initialSuspended;
     _lastAppliedSuspended = initialSuspended;
+    _displayTimeoutMs = ConfigManager::getDisplayTimeoutSec() * 1000UL;
+    _displaySleepOff = ConfigManager::isDisplaySleepOff();
 
     buildUi();
     loadSchoolLogoFromFs();
@@ -251,12 +264,37 @@ void GuiManager::updateStandbyBrandingLayout() {
     }
 }
 
+void GuiManager::applyStandbyModeVisuals() {
+    if (!g_has_display || !_standbyOverlay) return;
+
+    if (_displaySleepOff) {
+        lv_obj_set_size(_standbyOverlay, 320, 240);
+        lv_obj_center(_standbyOverlay);
+        lv_obj_set_style_bg_color(_standbyOverlay, lv_color_hex(0x000000), 0);
+        lv_obj_add_flag(_imgStandbyLogo,   LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(_lblStandbyClock,  LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(_lblStandbySchool, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(_lblStandbyDate,   LV_OBJ_FLAG_HIDDEN);
+        DisplayTouchDriver::setBacklightBrightness(BRIGHTNESS_OFF);
+    } else {
+        lv_obj_set_size(_standbyOverlay, 310, 230);
+        lv_obj_center(_standbyOverlay);
+        lv_obj_set_style_bg_color(_standbyOverlay, lv_color_hex(0x0B0F17), 0);
+        lv_obj_clear_flag(_lblStandbyClock, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_lblStandbyDate,  LV_OBJ_FLAG_HIDDEN);
+        updateStandbyBrandingLayout();
+        DisplayTouchDriver::setBacklightBrightness(BRIGHTNESS_STANDBY);
+    }
+}
+
 void GuiManager::enterStandby() {
     if (!g_has_display || _inStandby || !_standbyOverlay) return;
     _inStandby = true;
     lv_obj_clear_flag(_standbyOverlay, LV_OBJ_FLAG_HIDDEN);
-    DisplayTouchDriver::setBacklightBrightness(BRIGHTNESS_STANDBY);
-    Serial.println("[GUI] Ingresso in modalita Standby (luminosita ridotta + orologio a tutto schermo).");
+    applyStandbyModeVisuals();
+    Serial.printf("[GUI] Ingresso in %s.\n",
+                  _displaySleepOff ? "Spegnimento Display (backlight 0%)"
+                                   : "modalita Standby (luminosita ridotta + orologio)");
 }
 
 void GuiManager::exitStandby() {
@@ -265,7 +303,7 @@ void GuiManager::exitStandby() {
     lv_obj_add_flag(_standbyOverlay, LV_OBJ_FLAG_HIDDEN);
     DisplayTouchDriver::setBacklightBrightness(BRIGHTNESS_ACTIVE);
     lv_disp_trig_activity(nullptr);
-    Serial.println("[GUI] Risveglio dallo Standby (luminosita 100%).");
+    Serial.println("[GUI] Risveglio display (luminosita 100%).");
 }
 
 void GuiManager::onStandbyTouched(lv_event_t* e) {
@@ -636,7 +674,20 @@ void GuiManager::refreshDynamicData() {
     if (_brandingDirty) {
         _brandingDirty = false;
         loadSchoolLogoFromFs();
-        updateStandbyBrandingLayout();
+        if (!_inStandby || !_displaySleepOff) {
+            updateStandbyBrandingLayout();
+        }
+    }
+
+    if (_displaySettingsDirty) {
+        _displaySettingsDirty = false;
+        _displayTimeoutMs = ConfigManager::getDisplayTimeoutSec() * 1000UL;
+        _displaySleepOff  = ConfigManager::isDisplaySleepOff();
+        if (_inStandby) {
+            applyStandbyModeVisuals();
+        } else {
+            lv_disp_trig_activity(nullptr);
+        }
     }
 
     bool currentCfgSuspended = ConfigManager::isSuspended();
@@ -645,15 +696,18 @@ void GuiManager::refreshDynamicData() {
         _stateDirty = false;
         _lastAppliedSuspended = newState;
         applySuspendedVisuals(newState);
+        if (_inStandby) {
+            exitStandby(); // Risveglia il display su evento di cambio stato (es. sospensione/riattivazione da Web)
+        }
+    }
+
+    if (_inStandby && (RelayController::isActive() || _ringingDirty)) {
+        exitStandby(); // Risveglia il display quando scatta la campanella o su evento relè
     }
 
     uint32_t inactiveMs = lv_disp_get_inactive_time(nullptr);
-    if (!_inStandby && inactiveMs >= STANDBY_TIMEOUT_MS && !RelayController::isActive()) {
+    if (!_inStandby && inactiveMs >= _displayTimeoutMs && !RelayController::isActive()) {
         enterStandby();
-    }
-
-    if (_inStandby && RelayController::isActive()) {
-        exitStandby();
     }
 
     String fullTimeStr = NetworkManager::getFormattedTime();
@@ -765,7 +819,7 @@ void GuiManager::guiTask(void* pvParameters) {
         }
 
         uint32_t now = millis();
-        if (_stateDirty || _brandingDirty || _ringingDirty || (RelayController::isActive() != _lastRelayActive) || (now - lastRefreshMs >= 250)) {
+        if (_stateDirty || _brandingDirty || _ringingDirty || _displaySettingsDirty || (RelayController::isActive() != _lastRelayActive) || (now - lastRefreshMs >= 250)) {
             lastRefreshMs = now;
             refreshDynamicData();
         }

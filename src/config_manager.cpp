@@ -1,4 +1,5 @@
 #include "config_manager.h"
+#include "hardware_pins.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
@@ -15,11 +16,27 @@ constexpr uint32_t ConfigManager::DEFAULT_RELAY_PULSE_MS;
 constexpr uint32_t ConfigManager::MAX_RELAY_PULSE_MS;
 constexpr uint32_t ConfigManager::MIN_RELAY_PULSE_MS;
 constexpr uint8_t ConfigManager::DAYS_MON_TO_SAT_MASK;
+constexpr uint32_t ConfigManager::DEFAULT_DISPLAY_TIMEOUT_SEC;
+constexpr uint32_t ConfigManager::MIN_DISPLAY_TIMEOUT_SEC;
+constexpr uint32_t ConfigManager::MAX_DISPLAY_TIMEOUT_SEC;
+constexpr uint16_t ConfigManager::DEFAULT_AP_TIMEOUT_MIN;
+constexpr uint16_t ConfigManager::MAX_AP_TIMEOUT_MIN;
 
 uint32_t ConfigManager::clampRelayPulse(uint32_t pulseMs) {
     if (pulseMs < MIN_RELAY_PULSE_MS) return MIN_RELAY_PULSE_MS;
     if (pulseMs > MAX_RELAY_PULSE_MS) return MAX_RELAY_PULSE_MS;
     return pulseMs;
+}
+
+uint32_t ConfigManager::clampDisplayTimeout(uint32_t sec) {
+    if (sec < MIN_DISPLAY_TIMEOUT_SEC) return MIN_DISPLAY_TIMEOUT_SEC;
+    if (sec > MAX_DISPLAY_TIMEOUT_SEC) return MAX_DISPLAY_TIMEOUT_SEC;
+    return sec;
+}
+
+uint16_t ConfigManager::clampApTimeout(uint16_t min) {
+    if (min > MAX_AP_TIMEOUT_MIN) return MAX_AP_TIMEOUT_MIN;
+    return min;
 }
 
 void ConfigManager::loadDefaults(SystemConfig& cfg) {
@@ -31,6 +48,10 @@ void ConfigManager::loadDefaults(SystemConfig& cfg) {
     cfg.schoolName[0] = '\0';
     cfg.relayPulseMs = DEFAULT_RELAY_PULSE_MS;
     cfg.suspended = false;
+    cfg.displayTimeoutSec = DEFAULT_DISPLAY_TIMEOUT_SEC;
+    cfg.displaySleepOff = false;
+    cfg.apTimeoutMin = DEFAULT_AP_TIMEOUT_MIN;
+    cfg.apLockAfterSta = true;
     cfg.schedule.clear();
 
     // Orari scolastici predefiniti (Lun-Sab):
@@ -146,6 +167,14 @@ bool ConfigManager::loadFromFileInternal() {
     _config.relayPulseMs = clampRelayPulse(rawPulse);
     _config.suspended = doc["suspended"] | false;
 
+    uint32_t rawDispSec = doc["display_timeout_sec"] | DEFAULT_DISPLAY_TIMEOUT_SEC;
+    _config.displayTimeoutSec = clampDisplayTimeout(rawDispSec);
+    _config.displaySleepOff = doc["display_sleep_off"] | false;
+
+    uint16_t rawApMin = doc["ap_timeout_min"] | DEFAULT_AP_TIMEOUT_MIN;
+    _config.apTimeoutMin = clampApTimeout(rawApMin);
+    _config.apLockAfterSta = doc["ap_lock_after_sta"] | true;
+
     _config.schedule.clear();
     if (doc["schedule"].is<JsonArray>()) {
         JsonArray arr = doc["schedule"].as<JsonArray>();
@@ -178,18 +207,21 @@ bool ConfigManager::loadFromFileInternal() {
     return true;
 }
 
-bool ConfigManager::saveToFileInternal(const SystemConfig& cfg) {
-    JsonDocument doc;
-
+static void populateJsonFromConfig(JsonDocument& doc, const SystemConfig& cfg,
+                                   uint32_t clampedPulse, uint32_t clampedDispSec, uint16_t clampedApMin) {
     doc["wifi_ssid"] = cfg.wifiSsid;
     doc["wifi_password"] = cfg.wifiPassword;
-    doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : DEFAULT_AP_SSID;
+    doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : ConfigManager::DEFAULT_AP_SSID;
     doc["ap_password"] = cfg.apPassword;
     doc["web_password"] = cfg.webPassword;
     doc["school_name"] = cfg.schoolName;
-    doc["relay_pulse_ms"] = clampRelayPulse(cfg.relayPulseMs);
-    doc["relay_duration_ms"] = clampRelayPulse(cfg.relayPulseMs);
+    doc["relay_pulse_ms"] = clampedPulse;
+    doc["relay_duration_ms"] = clampedPulse;
     doc["suspended"] = cfg.suspended;
+    doc["display_timeout_sec"] = clampedDispSec;
+    doc["display_sleep_off"] = cfg.displaySleepOff;
+    doc["ap_timeout_min"] = clampedApMin;
+    doc["ap_lock_after_sta"] = cfg.apLockAfterSta;
 
     JsonArray arr = doc["schedule"].to<JsonArray>();
     for (const auto& item : cfg.schedule) {
@@ -201,6 +233,14 @@ bool ConfigManager::saveToFileInternal(const SystemConfig& cfg) {
         obj["enabled"] = item.enabled;
         obj["label"] = (strlen(item.label) > 0) ? item.label : "Campanella";
     }
+}
+
+bool ConfigManager::saveToFileInternal(const SystemConfig& cfg) {
+    JsonDocument doc;
+    populateJsonFromConfig(doc, cfg,
+                           clampRelayPulse(cfg.relayPulseMs),
+                           clampDisplayTimeout(cfg.displayTimeoutSec),
+                           clampApTimeout(cfg.apTimeoutMin));
 
     File file = LittleFS.open(CONFIG_FILE_PATH, FILE_WRITE);
     if (!file) {
@@ -235,6 +275,8 @@ bool ConfigManager::saveConfig(const SystemConfig& newConfig) {
     if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
         _config = newConfig;
         _config.relayPulseMs = clampRelayPulse(_config.relayPulseMs);
+        _config.displayTimeoutSec = clampDisplayTimeout(_config.displayTimeoutSec);
+        _config.apTimeoutMin = clampApTimeout(_config.apTimeoutMin);
         ok = saveToFileInternal(_config);
         xSemaphoreGive(_mutex);
     }
@@ -361,6 +403,174 @@ bool ConfigManager::resetToFactoryDefaults() {
     return ok;
 }
 
+bool ConfigManager::setDisplaySettings(uint32_t timeoutSec, bool sleepOff) {
+    if (!_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        _config.displayTimeoutSec = clampDisplayTimeout(timeoutSec);
+        _config.displaySleepOff = sleepOff;
+        ok = saveToFileInternal(_config);
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+uint32_t ConfigManager::getDisplayTimeoutSec() {
+    uint32_t sec = DEFAULT_DISPLAY_TIMEOUT_SEC;
+    if (_mutex && xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        sec = clampDisplayTimeout(_config.displayTimeoutSec);
+        xSemaphoreGive(_mutex);
+    }
+    return sec;
+}
+
+bool ConfigManager::isDisplaySleepOff() {
+    bool off = false;
+    if (_mutex && xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        off = _config.displaySleepOff;
+        xSemaphoreGive(_mutex);
+    }
+    return off;
+}
+
+bool ConfigManager::setApPolicy(uint16_t apTimeoutMin, bool apLockAfterSta) {
+    if (!_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        _config.apTimeoutMin = clampApTimeout(apTimeoutMin);
+        _config.apLockAfterSta = apLockAfterSta;
+        ok = saveToFileInternal(_config);
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+uint16_t ConfigManager::getApTimeoutMin() {
+    uint16_t min = DEFAULT_AP_TIMEOUT_MIN;
+    if (_mutex && xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        min = clampApTimeout(_config.apTimeoutMin);
+        xSemaphoreGive(_mutex);
+    }
+    return min;
+}
+
+bool ConfigManager::isApLockAfterSta() {
+    bool locked = true;
+    if (_mutex && xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        locked = _config.apLockAfterSta;
+        xSemaphoreGive(_mutex);
+    }
+    return locked;
+}
+
+String ConfigManager::exportConfigJson() {
+    SystemConfig cfg = getConfig();
+    JsonDocument doc;
+    doc["chronoring_backup"] = true;
+    doc["fw_version"] = CHRONORING_FW_VERSION;
+    populateJsonFromConfig(doc, cfg,
+                           clampRelayPulse(cfg.relayPulseMs),
+                           clampDisplayTimeout(cfg.displayTimeoutSec),
+                           clampApTimeout(cfg.apTimeoutMin));
+    String out;
+    serializeJsonPretty(doc, out);
+    return out;
+}
+
+bool ConfigManager::importConfigJson(const String& jsonStr, String& errorOut) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonStr);
+    if (err || !doc.is<JsonObject>()) {
+        errorOut = String("JSON non valido: ") + (err ? err.c_str() : "formato errato");
+        return false;
+    }
+
+    if (!doc["schedule"].is<JsonArray>() && !(doc["chronoring_backup"] | false)) {
+        errorOut = "Il file non sembra un backup valido di ChronoRing.";
+        return false;
+    }
+
+    SystemConfig newCfg = getConfig();
+
+    if (doc["wifi_ssid"].is<const char*>()) {
+        strlcpy(newCfg.wifiSsid, doc["wifi_ssid"] | "", sizeof(newCfg.wifiSsid));
+    }
+    if (doc["wifi_password"].is<const char*>()) {
+        strlcpy(newCfg.wifiPassword, doc["wifi_password"] | "", sizeof(newCfg.wifiPassword));
+    }
+    if (doc["ap_ssid"].is<const char*>()) {
+        String s = String(doc["ap_ssid"] | DEFAULT_AP_SSID);
+        s.trim();
+        if (s.length() >= 1 && s.length() <= 31) {
+            strlcpy(newCfg.apSsid, s.c_str(), sizeof(newCfg.apSsid));
+        }
+    }
+    if (doc["ap_password"].is<const char*>()) {
+        const char* apPwd = doc["ap_password"] | "";
+        size_t len = strlen(apPwd);
+        if (len == 0 || (len >= 8 && len <= 63)) {
+            strlcpy(newCfg.apPassword, apPwd, sizeof(newCfg.apPassword));
+        }
+    }
+    if (doc["web_password"].is<const char*>()) {
+        const char* wp = doc["web_password"] | "";
+        if (strlen(wp) >= 3) {
+            strlcpy(newCfg.webPassword, wp, sizeof(newCfg.webPassword));
+        }
+    }
+    if (doc["school_name"].is<const char*>()) {
+        strlcpy(newCfg.schoolName, doc["school_name"] | "", sizeof(newCfg.schoolName));
+    }
+    if (!doc["relay_pulse_ms"].isNull() || !doc["relay_duration_ms"].isNull()) {
+        uint32_t rawP = doc["relay_pulse_ms"] | (doc["relay_duration_ms"] | DEFAULT_RELAY_PULSE_MS);
+        newCfg.relayPulseMs = clampRelayPulse(rawP);
+    }
+    if (!doc["suspended"].isNull()) {
+        newCfg.suspended = doc["suspended"] | false;
+    }
+    if (!doc["display_timeout_sec"].isNull()) {
+        newCfg.displayTimeoutSec = clampDisplayTimeout(doc["display_timeout_sec"] | DEFAULT_DISPLAY_TIMEOUT_SEC);
+    }
+    if (!doc["display_sleep_off"].isNull()) {
+        newCfg.displaySleepOff = doc["display_sleep_off"] | false;
+    }
+    if (!doc["ap_timeout_min"].isNull()) {
+        newCfg.apTimeoutMin = clampApTimeout(doc["ap_timeout_min"] | DEFAULT_AP_TIMEOUT_MIN);
+    }
+    if (!doc["ap_lock_after_sta"].isNull()) {
+        newCfg.apLockAfterSta = doc["ap_lock_after_sta"] | true;
+    }
+
+    if (doc["schedule"].is<JsonArray>()) {
+        std::vector<BellScheduleItem> parsed;
+        for (JsonObject obj : doc["schedule"].as<JsonArray>()) {
+            const char* timeStr = obj["time"] | "";
+            int h = -1, m = -1;
+            if (sscanf(timeStr, "%d:%d", &h, &m) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
+                BellScheduleItem item;
+                item.hour = static_cast<uint8_t>(h);
+                item.minute = static_cast<uint8_t>(m);
+                item.daysMask = obj["days_mask"] | DAYS_MON_TO_SAT_MASK;
+                item.enabled = obj["enabled"] | true;
+                String lblStr = String(obj["label"] | "Campanella");
+                lblStr.trim();
+                const char* finalLbl = lblStr.length() > 0 ? lblStr.c_str() : "Campanella";
+                strlcpy(item.label, finalLbl, sizeof(item.label));
+                parsed.push_back(item);
+            }
+        }
+        if (!parsed.empty()) {
+            newCfg.schedule = parsed;
+        }
+    }
+
+    if (!saveConfig(newCfg)) {
+        errorOut = "Errore salvataggio configurazione importata su LittleFS.";
+        return false;
+    }
+    return true;
+}
+
 bool ConfigManager::setSchoolName(const char* schoolName) {
     if (!schoolName || !_mutex) return false;
     bool ok = false;
@@ -411,9 +621,14 @@ void ConfigManager::printDiagnostics() {
     Serial.printf(" - Nome Istituto      : %s\n", strlen(cfg.schoolName) > 0 ? cfg.schoolName : "<Non impostato>");
     Serial.printf(" - Logo Scuola        : %s\n", hasSchoolLogo() ? "Presente (/school_logo.bin)" : "Non caricato");
     Serial.printf(" - Wi-Fi SSID         : %s\n", strlen(cfg.wifiSsid) > 0 ? cfg.wifiSsid : "<Non configurato - Fallback AP>");
-    Serial.printf(" - Hotspot AP SSID    : %s (%s)\n",
+    Serial.printf(" - Hotspot AP SSID    : %s (%s | Timeout: %u min | Blocco post-STA: %s)\n",
                   strlen(cfg.apSsid) > 0 ? cfg.apSsid : DEFAULT_AP_SSID,
-                  strlen(cfg.apPassword) >= 8 ? "PROTETTO WPA2" : "APERTO");
+                  strlen(cfg.apPassword) >= 8 ? "PROTETTO WPA2" : "APERTO",
+                  cfg.apTimeoutMin,
+                  cfg.apLockAfterSta ? "SI" : "NO");
+    Serial.printf(" - Display Timeout    : %u s (%s)\n",
+                  cfg.displayTimeoutSec,
+                  cfg.displaySleepOff ? "Spegnimento totale" : "Standby orologio/logo");
     Serial.printf(" - Password Web (len) : %u caratteri\n", strlen(cfg.webPassword));
     Serial.printf(" - Durata Impulso Relè: %u ms (Hard Cap: %u ms)\n", cfg.relayPulseMs, MAX_RELAY_PULSE_MS);
     Serial.printf(" - Stato Sospensione  : %s\n", cfg.suspended ? "SOSPESO (Campanella Disattivata)" : "ATTIVO");

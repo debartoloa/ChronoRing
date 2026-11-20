@@ -21,9 +21,10 @@ void gui_set_bell_ringing(bool is_ringing);
 
 class GuiManager {
 public:
-    static constexpr uint32_t STANDBY_TIMEOUT_MS = 60000; // 1 minuto di inattività touch
+    static constexpr uint32_t STANDBY_TIMEOUT_MS = 60000; // 1 minuto di inattività touch (default)
     static constexpr uint8_t  BRIGHTNESS_ACTIVE  = 255;   // 100% luminosità attiva
     static constexpr uint8_t  BRIGHTNESS_STANDBY = 45;    // ~18% luminosità ridotta in standby
+    static constexpr uint8_t  BRIGHTNESS_OFF     = 0;     // 0% retroilluminazione spenta
 
     /**
      * @brief Esegue l'autorilevamento I2C del display; se presente avvia LVGL e il task su Core 1,
@@ -34,6 +35,7 @@ public:
     static void requestStateUpdate(bool isSuspended);
     static void requestBellRingingUpdate(bool isRinging);
     static void requestBrandingReload();
+    static void requestDisplaySettingsReload();
 
 private:
     static TaskHandle_t _guiTaskHandle;
@@ -41,10 +43,13 @@ private:
     static volatile bool _targetSuspendedState;
     static volatile bool _brandingDirty;
     static volatile bool _ringingDirty;
+    static volatile bool _displaySettingsDirty;
     static bool _lastAppliedSuspended;
     static bool _lastRelayActive;
     static int  _lastRenderedWeatherCode;
     static bool _inStandby;
+    static uint32_t _displayTimeoutMs;
+    static bool _displaySleepOff;
 
     // Buffer PSRAM/SRAM per il Logo Scuola RGB565
     static uint8_t*     _logoPixelBuf;
@@ -88,6 +93,7 @@ private:
     static void buildUi();
     static void loadSchoolLogoFromFs();
     static void updateStandbyBrandingLayout();
+    static void applyStandbyModeVisuals();
     static void enterStandby();
     static void exitStandby();
     static void renderModernWeatherIcon(int wmoCode);

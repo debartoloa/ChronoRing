@@ -20,8 +20,12 @@ volatile bool NetworkManager::_mdnsStarted = false;
 volatile bool NetworkManager::_ntpConfigured = false;
 volatile bool NetworkManager::_reconnectRequested = false;
 volatile bool NetworkManager::_apRestartRequested = false;
+volatile bool NetworkManager::_forceStartApRequested = false;
 volatile bool NetworkManager::_scanInProgress = false;
 volatile uint32_t NetworkManager::_lastScanTimestampMs = 0;
+volatile bool NetworkManager::_hasConnectedStaOnce = false;
+volatile bool NetworkManager::_apTimedOut = false;
+uint32_t NetworkManager::_apLastActivityMs = 0;
 TaskHandle_t NetworkManager::_netTaskHandle = nullptr;
 
 constexpr const char* NetworkManager::MDNS_HOSTNAME;
@@ -217,12 +221,11 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
 
     if (WiFi.status() == WL_CONNECTED) {
         _staConnected = true;
-        if (_apActive) {
-            Serial.println("[NET] Connessione STA stabilita: disattivazione Access Point di fallback.");
-            s_dnsServer.stop();
-            WiFi.softAPdisconnect(true);
-            WiFi.mode(WIFI_STA);
-            _apActive = false;
+        _hasConnectedStaOnce = true;
+        _apTimedOut = false;
+        if (_apActive || WiFi.getMode() != WIFI_STA) {
+            Serial.println("[NET] Connessione STA stabilita: disattivazione totale Access Point di fallback.");
+            stopFallbackAP();
         }
         Serial.printf("[NET] Connesso! IP: %s | Hostname: http://%s.local | RSSI: %d dBm\n",
                       WiFi.localIP().toString().c_str(), MDNS_HOSTNAME, WiFi.RSSI());
@@ -267,6 +270,8 @@ void NetworkManager::startFallbackAP() {
         s_dnsServer.start(CAPTIVE_DNS_PORT, "*", AP_LOCAL_IP);
 
         _apActive = true;
+        _apTimedOut = false;
+        _apLastActivityMs = millis();
         Serial.printf("[NET] Hotspot attivo! SSID: '%s' | IP/Gateway/DHCP: %s | Canale: %u\n",
                       apSsid, WiFi.softAPIP().toString().c_str(), AP_FIXED_CHANNEL);
         Serial.printf("[NET] Captive Portal DNS attivo -> apri http://%s (o http://%s.local)\n",
@@ -275,6 +280,28 @@ void NetworkManager::startFallbackAP() {
     } else {
         Serial.println("[NET] ERRORE CRITICO: Impossibile avviare il Fallback Access Point!");
     }
+}
+
+void NetworkManager::stopFallbackAP() {
+    s_dnsServer.stop();
+    if (_apActive || WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+    }
+    _apActive = false;
+}
+
+void NetworkManager::requestManualApStart() {
+    _apTimedOut = false;
+    _forceStartApRequested = true;
+}
+
+bool NetworkManager::isApTimedOut() {
+    return _apTimedOut;
+}
+
+bool NetworkManager::isApLocked() {
+    return _hasConnectedStaOnce && ConfigManager::isApLockAfterSta();
 }
 
 void NetworkManager::setupMdnsAndNtp() {
@@ -324,14 +351,22 @@ void NetworkManager::networkTask(void* pvParameters) {
             }
         }
 
+        if (_forceStartApRequested) {
+            _forceStartApRequested = false;
+            if (!_staConnected) {
+                Serial.println("[NET] Attivazione manuale Hotspot Access Point richiesta.");
+                startFallbackAP();
+            } else {
+                Serial.println("[NET] Richiesta attivazione AP ignorata: già connesso in STA.");
+            }
+        }
+
         if (_apRestartRequested) {
             _apRestartRequested = false;
             if (_apActive) {
                 Serial.println("[NET] Riavvio Hotspot Access Point con le nuove credenziali...");
                 vTaskDelay(pdMS_TO_TICKS(400)); // Lascia completare la risposta HTTP prima di chiudere il vecchio AP
-                s_dnsServer.stop();
-                WiFi.softAPdisconnect(true);
-                _apActive = false;
+                stopFallbackAP();
                 vTaskDelay(pdMS_TO_TICKS(150));
                 startFallbackAP();
             }
@@ -346,7 +381,7 @@ void NetworkManager::networkTask(void* pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(200));
             if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
                 setupMdnsAndNtp();
-            } else {
+            } else if (!isApLocked() && !_apTimedOut) {
                 startFallbackAP();
             }
             lastRetryMs = millis();
@@ -359,20 +394,35 @@ void NetworkManager::networkTask(void* pvParameters) {
 
         if (status == WL_CONNECTED) {
             disconnectStartMs = 0;
+            _hasConnectedStaOnce = true;
+            _apTimedOut = false;
             if (!_staConnected) {
                 _staConnected = true;
                 Serial.printf("[NET] Connessione Wi-Fi ripristinata! IP: %s\n",
                               WiFi.localIP().toString().c_str());
                 setupMdnsAndNtp();
-                if (_apActive) {
-                    s_dnsServer.stop();
-                    WiFi.softAPdisconnect(true);
-                    WiFi.mode(WIFI_STA);
-                    WiFi.setAutoReconnect(true);
-                    _apActive = false;
-                }
+            }
+            if (_apActive || (!scanGraceActive && WiFi.getMode() != WIFI_STA)) {
+                Serial.println("[NET] Rete STA attiva: disattivazione interfaccia SoftAP per sicurezza.");
+                stopFallbackAP();
+                WiFi.setAutoReconnect(true);
             }
         } else {
+            // Se l'Hotspot AP è attivo, controlla il timeout di inattività senza client collegati
+            if (_apActive) {
+                if (WiFi.softAPgetStationNum() > 0) {
+                    _apLastActivityMs = millis();
+                } else {
+                    uint16_t apTmoMin = ConfigManager::getApTimeoutMin();
+                    if (apTmoMin > 0 && (millis() - _apLastActivityMs >= static_cast<uint32_t>(apTmoMin) * 60000UL)) {
+                        Serial.printf("[NET] Timeout Hotspot AP (%u min senza client): spegnimento automatico per sicurezza.\n",
+                                      apTmoMin);
+                        stopFallbackAP();
+                        _apTimedOut = true;
+                    }
+                }
+            }
+
             if (_staConnected) {
                 if (scanGraceActive) {
                     // Durante o subito dopo una scansione Wi-Fi non consideriamo caduta la connessione
@@ -383,15 +433,21 @@ void NetworkManager::networkTask(void* pvParameters) {
                     } else if (millis() - disconnectStartMs >= 8000) {
                         disconnectStartMs = 0;
                         _staConnected = false;
-                        Serial.println("[NET] Connessione Wi-Fi persa (>8s). Attivazione AP di emergenza...");
-                        startFallbackAP();
+                        if (isApLocked()) {
+                            Serial.println("[NET] Connessione Wi-Fi persa (>8s). Hotspot AP bloccato per sicurezza (attesa ritorno rete STA).");
+                            stopFallbackAP();
+                            WiFi.setAutoReconnect(true);
+                        } else {
+                            Serial.println("[NET] Connessione Wi-Fi persa (>8s). Attivazione AP di emergenza...");
+                            startFallbackAP();
+                        }
                         lastRetryMs = millis();
                     }
                 }
             } else {
                 disconnectStartMs = 0;
 
-                // Riprova ogni 60s SOLO se nessun utente è attualmente collegato all'Hotspot ChronoRing-Setup,
+                // Riprova ogni 60s SOLO se nessun utente è attualmente collegato all'Hotspot,
                 // nessuna scansione manuale è in corso e la rete salvata torna visibile.
                 if (!scanGraceActive && (!_apActive || WiFi.softAPgetStationNum() == 0)) {
                     SystemConfig cfg = ConfigManager::getConfig();
@@ -401,7 +457,7 @@ void NetworkManager::networkTask(void* pvParameters) {
                             Serial.printf("[NET] Rete '%s' nuovamente visibile: tentativo di riconnessione...\n", cfg.wifiSsid);
                             if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
                                 setupMdnsAndNtp();
-                            } else {
+                            } else if (!isApLocked() && !_apTimedOut) {
                                 startFallbackAP();
                             }
                         }
@@ -494,6 +550,12 @@ String NetworkManager::getNetworkModeString() {
     }
     if (_apActive) {
         return String("Access Point (") + WiFi.softAPSSID() + ")";
+    }
+    if (_apTimedOut) {
+        return "Hotspot Spento (Timeout)";
+    }
+    if (isApLocked()) {
+        return "Riconnessione Wi-Fi (AP Bloccato)";
     }
     return "Disconnesso";
 }

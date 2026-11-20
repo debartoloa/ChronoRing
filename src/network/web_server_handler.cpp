@@ -9,6 +9,7 @@
 #include <LittleFS.h>
 #include <Update.h>
 #include <esp_timer.h>
+#include <string>
 
 AsyncWebServer WebServerHandler::_server(80);
 char WebServerHandler::_sessionToken[40] = {0};
@@ -110,7 +111,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
   .brand{display:flex;align-items:center;gap:12px;}
   .brand svg{width:42px;height:42px;}
   .brand h1{font-size:1.35rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--cyan);}
-  .brand span{font-size:0.78rem;color:var(--muted);display:block;}
+  .brand #netInfo{font-size:0.78rem;color:var(--muted);display:block;}
   .nav-btns{display:flex;gap:10px;align-items:center;}
   .btn{padding:9px 15px;border-radius:9px;border:none;font-weight:600;font-size:0.88rem;cursor:pointer;transition:0.2s;text-decoration:none;display:inline-flex;align-items:center;gap:6px;}
   .btn-cyan{background:linear-gradient(135deg,#0284c7,#00d4ff);color:#041022;}
@@ -118,7 +119,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
   .btn-danger{background:rgba(239,68,68,0.18);color:#fca5a5;border:1px solid rgba(239,68,68,0.4);}
   .btn-outline{background:rgba(0,212,255,0.1);color:var(--cyan);border:1px solid rgba(0,212,255,0.35);}
   .btn:hover{filter:brightness(1.12);}
-  .container{max-width:1100px;margin:22px auto;padding:0 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;}
+  .container{max-width:1240px;margin:22px auto;padding:0 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:18px;}
   .card{background:var(--card);border:1px solid rgba(0,212,255,0.22);border-radius:14px;padding:20px;box-shadow:0 8px 25px rgba(0,0,0,0.35);}
   .card-full{grid-column:1 / -1;}
   .card h2{font-size:1.02rem;color:var(--cyan);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,0.07);padding-bottom:8px;text-transform:uppercase;letter-spacing:0.8px;}
@@ -140,8 +141,23 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
   input:checked + .slider.danger-slider{background:var(--danger);}
   input:checked + .slider:before{transform:translateX(22px);}
   table{width:100%;border-collapse:collapse;margin-top:8px;}
-  th,td{padding:10px 8px;text-align:left;border-bottom:1px solid rgba(255,255,255,0.07);font-size:0.92rem;}
+  th,td{padding:10px 8px;text-align:left;border-bottom:1px solid rgba(255,255,255,0.07);font-size:0.92rem;vertical-align:middle;}
   th{color:var(--muted);font-size:0.8rem;text-transform:uppercase;}
+  tbody tr{transition:background 0.2s,box-shadow 0.2s;}
+  tbody tr.editing-row{background:rgba(0,212,255,0.13);box-shadow:inset 4px 0 0 var(--cyan);}
+  tbody tr.new-row-flash{animation:rowFlash 0.9s ease;}
+  @keyframes rowFlash{0%{background:rgba(0,212,255,0.34);}100%{background:rgba(0,212,255,0.13);}}
+  input.input-missing{border-color:var(--gold)!important;box-shadow:0 0 0 2px rgba(245,158,11,0.3)!important;}
+  .days-cell{min-width:230px;}
+  .day-pills{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:5px;}
+  .day-pill{border:1px solid rgba(148,163,184,0.3);background:#071022;color:var(--muted);border-radius:6px;padding:3px 6px;font-size:0.74rem;font-weight:700;cursor:pointer;transition:0.15s;line-height:1.1;}
+  .day-pill:hover{border-color:var(--cyan);color:#fff;}
+  .day-pill.active{background:rgba(0,212,255,0.22);border-color:var(--cyan);color:#7dd3fc;}
+  .day-pill.dom-pill.active{background:rgba(245,158,11,0.22);border-color:var(--gold);color:#fde68a;}
+  .day-presets{display:flex;gap:4px;flex-wrap:wrap;}
+  .preset-btn{border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:var(--muted);border-radius:99px;padding:2px 7px;font-size:0.68rem;font-weight:600;cursor:pointer;transition:0.15s;}
+  .preset-btn:hover{border-color:var(--cyan);color:#e2e8f0;}
+  .preset-btn.active{background:rgba(16,185,129,0.22);border-color:var(--green);color:#34d399;}
   input[type="time"],input[type="number"],input[type="text"],input[type="password"]{background:#071022;border:1px solid rgba(0,212,255,0.3);color:#fff;padding:8px 10px;border-radius:8px;font-size:0.92rem;}
   .form-grid{display:grid;gap:12px;}
   .form-group label{display:block;font-size:0.8rem;color:var(--muted);margin-bottom:5px;}
@@ -217,37 +233,23 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     </div>
   </div>
 
-  <!-- PERSONALIZZAZIONE ISTITUTO & SCHERMATA DI STANDBY -->
-  <div class="card card-full">
-    <h2>
-      <span>🏫 Personalizzazione Istituto & Schermata Standby (1 min)</span>
-      <span id="logoStatusBadge" class="badge badge-warn">Nessun Logo</span>
-    </h2>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;align-items:center;">
-      <div class="form-grid">
-        <div class="form-group">
-          <label>Nome dell'Istituto Scolastico (mostrato nella schermata di Standby)</label>
-          <div style="display:flex;gap:8px;">
-            <input type="text" id="schoolName" maxlength="60" placeholder="Es. I.I.S. Enrico Fermi">
-            <button class="btn btn-cyan" onclick="saveSchoolName()">💾 Salva Nome</button>
-          </div>
-        </div>
-        <div style="font-size:0.8rem;color:var(--muted);line-height:1.4;">
-          Dopo <strong>1 minuto</strong> di inattività touch, il display abbassa la luminosità e mostra l'orologio digitale grande <code>HH:MM:SS</code> insieme al <strong>Logo</strong> e al <strong>Nome dell'Istituto</strong>. Basta un tocco sullo schermo per riattivarlo.
+  <!-- DURATA SQUILLO E SICUREZZA -->
+  <div class="card">
+    <h2><span>⚙️ Durata Squillo &amp; Password</span></h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Durata Impulso Relè (ms) — [Min: 200 ms | Hard Cap Max: 10000 ms]</label>
+        <div style="display:flex;gap:8px;">
+          <input type="number" id="pulseMs" min="200" max="10000" step="100" value="3000">
+          <button class="btn btn-cyan" onclick="savePulse()">Salva</button>
         </div>
       </div>
-
-      <div>
-        <div class="logo-preview-wrap">
-          <canvas id="logoCanvas" width="76" height="76"></canvas>
-          <div style="flex:1;">
-            <label style="display:block;font-size:0.8rem;color:var(--cyan);margin-bottom:6px;font-weight:600;">LOGO DELLA SCUOLA (PNG / JPG / SVG)</label>
-            <input type="file" id="logoInput" accept="image/*" style="font-size:0.82rem;width:100%;margin-bottom:8px;" onchange="previewLogoFile(this)">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <button class="btn btn-cyan" style="padding:7px 12px;font-size:0.82rem;" onclick="uploadLogo()">⬆️ Carica Logo sul Display</button>
-              <button class="btn btn-danger" style="padding:7px 12px;font-size:0.82rem;" onclick="deleteLogo()">🗑️ Rimuovi</button>
-            </div>
-          </div>
+      <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:4px 0;">
+      <div class="form-group">
+        <label>Modifica Password Web Amministratore</label>
+        <div style="display:flex;gap:8px;">
+          <input type="password" id="newWebPwd" placeholder="Nuova password...">
+          <button class="btn btn-outline" onclick="savePassword()">Aggiorna</button>
         </div>
       </div>
     </div>
@@ -256,7 +258,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
   <!-- TABELLA ORARI PROGRAMMATI -->
   <div class="card card-full">
     <h2>
-      <span>📅 Programmazione Orari (Lunedì - Sabato)</span>
+      <span>📅 Programmazione Orari Settimanale</span>
       <button class="btn btn-outline" onclick="addScheduleRow()">+ Aggiungi Orario</button>
     </h2>
     <div style="overflow-x:auto;">
@@ -279,35 +281,64 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     </div>
   </div>
 
-  <!-- DURATA SQUILLO E SICUREZZA -->
-  <div class="card">
-    <h2><span>⚙️ Durata Squillo & Password</span></h2>
-    <div class="form-grid">
-      <div class="form-group">
-        <label>Durata Impulso Relè (ms) — [Min: 200 ms | Hard Cap Max: 10000 ms]</label>
-        <div style="display:flex;gap:8px;">
-          <input type="number" id="pulseMs" min="200" max="10000" step="100" value="3000">
-          <button class="btn btn-cyan" onclick="savePulse()">Salva</button>
+  <!-- PERSONALIZZAZIONE ISTITUTO & RISPARMIO DISPLAY -->
+  <div class="card card-full">
+    <h2>
+      <span>🏫 Personalizzazione Istituto &amp; Risparmio Display</span>
+      <span id="logoStatusBadge" class="badge badge-warn">Nessun Logo</span>
+    </h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;align-items:start;">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Nome dell'Istituto Scolastico (mostrato nella schermata di Standby)</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="schoolName" maxlength="60" placeholder="Es. I.I.S. Enrico Fermi">
+            <button class="btn btn-cyan" onclick="saveSchoolName()">💾 Salva Nome</button>
+          </div>
+        </div>
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:2px 0;">
+        <div class="toggle-row" style="margin-bottom:4px;">
+          <div>
+            <strong>Spegni completamente lo schermo al timeout</strong>
+            <div style="font-size:0.78rem;color:var(--muted);margin-top:2px;">Disattivo = Standby orologio/logo • Attivo = Schermo spento (0%). Si riaccende al tocco o su evento.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkDisplaySleepOff">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label>Timeout inattività Display (secondi) — [Min: 10s | Max: 3600s]</label>
+          <div style="display:flex;gap:8px;">
+            <input type="number" id="displayTimeoutSec" min="10" max="3600" step="5" value="60">
+            <button class="btn btn-cyan" onclick="saveDisplaySettings()">💾 Salva Display</button>
+          </div>
         </div>
       </div>
-      <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:4px 0;">
-      <div class="form-group">
-        <label>Modifica Password Web Amministratore</label>
-        <div style="display:flex;gap:8px;">
-          <input type="password" id="newWebPwd" placeholder="Nuova password...">
-          <button class="btn btn-outline" onclick="savePassword()">Aggiorna</button>
+
+      <div>
+        <div class="logo-preview-wrap">
+          <canvas id="logoCanvas" width="76" height="76"></canvas>
+          <div style="flex:1;">
+            <label style="display:block;font-size:0.8rem;color:var(--cyan);margin-bottom:6px;font-weight:600;">LOGO DELLA SCUOLA (PNG / JPG / SVG)</label>
+            <input type="file" id="logoInput" accept="image/*" style="font-size:0.82rem;width:100%;margin-bottom:8px;" onchange="previewLogoFile(this)">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-cyan" style="padding:7px 12px;font-size:0.82rem;" onclick="uploadLogo()">⬆️ Carica Logo sul Display</button>
+              <button class="btn btn-danger" style="padding:7px 12px;font-size:0.82rem;" onclick="deleteLogo()">🗑️ Rimuovi</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
   <!-- CONFIGURAZIONE WI-FI -->
-  <div class="card">
+  <div class="card card-full">
     <h2>
       <span>📶 Configurazione Rete Wi-Fi</span>
       <button class="btn btn-outline" style="padding:6px 12px;font-size:0.8rem;" onclick="openWifiModal()" id="btnScanWifi">🔍 Cerca Reti</button>
     </h2>
-    <div class="form-grid">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;align-items:end;">
       <div class="form-group">
         <label>SSID Rete Wi-Fi</label>
         <input type="text" id="wifiSsid" placeholder="Nome rete Wi-Fi...">
@@ -316,14 +347,16 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         <label>Password Wi-Fi (lascia vuoto per mantenere l'attuale)</label>
         <input type="password" id="wifiPwd" placeholder="Password Wi-Fi...">
       </div>
-      <button class="btn btn-cyan" onclick="saveWiFi()">💾 Salva e Connetti Wi-Fi</button>
+      <div>
+        <button class="btn btn-cyan" style="width:100%;justify-content:center;padding:10px 15px;" onclick="saveWiFi()">💾 Salva e Connetti Wi-Fi</button>
+      </div>
     </div>
   </div>
 
-  <!-- SICUREZZA HOTSPOT AP & RIPRISTINO IMPOSTAZIONI DI FABBRICA -->
+  <!-- SICUREZZA HOTSPOT AP, BACKUP & RIPRISTINO -->
   <div class="card card-full">
     <h2>
-      <span>🛡️ Sicurezza Hotspot Dispositivo (AP) &amp; Ripristino</span>
+      <span>🛡️ Sicurezza Hotspot Dispositivo (AP), Backup &amp; Ripristino</span>
       <span id="apSecBadge" class="badge badge-warn">Verifica...</span>
     </h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;align-items:start;">
@@ -336,17 +369,52 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
           <label>Password Hotspot WPA2 (min 8 caratteri — lascia vuoto per AP aperto)</label>
           <input type="password" id="apPwd" maxlength="63" placeholder="Minimo 8 caratteri oppure vuoto (aperto)...">
         </div>
-        <button class="btn btn-cyan" onclick="saveApConfig()">💾 Salva Configurazione Hotspot AP</button>
+        <button class="btn btn-cyan" onclick="saveApConfig()">💾 Salva Credenziali Hotspot AP</button>
+
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:4px 0;">
+        <div class="toggle-row" style="margin-bottom:4px;">
+          <div>
+            <strong>Blocca Hotspot dopo connessione Wi-Fi STA</strong>
+            <div style="font-size:0.78rem;color:var(--muted);margin-top:2px;">Spegne sempre l'AP sulla rete scolastica e impedisce hotspot aperti non presidiati</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkApLockAfterSta" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label>Timeout spegnimento Hotspot senza client (minuti, 0 = Mai, max 120)</label>
+          <div style="display:flex;gap:8px;">
+            <input type="number" id="apTimeoutMin" min="0" max="120" step="1" value="15">
+            <button class="btn btn-outline" onclick="saveApPolicy()">🛡️ Salva Policy</button>
+          </div>
+        </div>
       </div>
 
-      <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.32);border-radius:12px;padding:16px;">
-        <div style="font-weight:700;color:#fca5a5;margin-bottom:6px;">⚠️ Ripristino Impostazioni di Fabbrica</div>
-        <div style="font-size:0.82rem;color:var(--muted);line-height:1.45;margin-bottom:14px;">
-          Cancella reti Wi-Fi salvate, personalizzazione Hotspot AP, nome/logo dell'istituto, password Web e riporta orari e durata relè ai valori predefiniti (password: <code>admin</code>, hotspot: <code>ChronoRing-Setup</code> aperto).
+      <div class="form-grid">
+        <div style="background:var(--card2);border:1px solid rgba(0,212,255,0.25);border-radius:12px;padding:16px;">
+          <div style="font-weight:700;color:var(--cyan);margin-bottom:6px;">💾 Backup &amp; Ripristino Configurazione (.json)</div>
+          <div style="font-size:0.82rem;color:var(--muted);line-height:1.45;margin-bottom:12px;">
+            Esporta tutti gli orari, le etichette e le impostazioni di ChronoRing oppure ricaricali su un dispositivo nuovo.
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <button class="btn btn-cyan" style="justify-content:center;" onclick="downloadBackup()">⬇️ Scarica Backup (.json)</button>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <input type="file" id="restoreFileInput" accept=".json,application/json" style="flex:1;min-width:160px;font-size:0.82rem;">
+              <button class="btn btn-outline" id="btnRestoreBackup" onclick="uploadRestoreBackup()">⬆️ Ripristina</button>
+            </div>
+          </div>
         </div>
-        <button class="btn btn-danger" style="width:100%;justify-content:center;padding:12px;" id="btnFactoryReset" onclick="factoryResetDevice()">
-          🔄 RIPRISTINA IMPOSTAZIONI DI FABBRICA
-        </button>
+
+        <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.32);border-radius:12px;padding:16px;">
+          <div style="font-weight:700;color:#fca5a5;margin-bottom:6px;">⚠️ Ripristino Impostazioni di Fabbrica</div>
+          <div style="font-size:0.82rem;color:var(--muted);line-height:1.45;margin-bottom:14px;">
+            Cancella reti Wi-Fi salvate, personalizzazione Hotspot AP, nome/logo dell'istituto, password Web e riporta orari e durata relè ai valori predefiniti (password: <code>admin</code>, hotspot: <code>ChronoRing-Setup</code> aperto).
+          </div>
+          <button class="btn btn-danger" style="width:100%;justify-content:center;padding:12px;" id="btnFactoryReset" onclick="factoryResetDevice()">
+            🔄 RIPRISTINA IMPOSTAZIONI DI FABBRICA
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -424,6 +492,10 @@ async function loadConfig() {
   document.getElementById('pulseMs').value = d.relay_pulse_ms;
   document.getElementById('wifiSsid').value = d.wifi_ssid || '';
   document.getElementById('apSsid').value = d.ap_ssid || 'ChronoRing-Setup';
+  document.getElementById('chkDisplaySleepOff').checked = !!d.display_sleep_off;
+  document.getElementById('displayTimeoutSec').value = d.display_timeout_sec || 60;
+  document.getElementById('chkApLockAfterSta').checked = (d.ap_lock_after_sta !== false);
+  document.getElementById('apTimeoutMin').value = (d.ap_timeout_min !== undefined) ? d.ap_timeout_min : 15;
   const apBadge = document.getElementById('apSecBadge');
   if (apBadge) {
     apBadge.textContent = d.ap_has_password ? '🔒 AP PROTETTO WPA2' : '🔓 AP APERTO (NESSUNA PASSWORD)';
@@ -531,36 +603,132 @@ function escapeAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
-function renderSchedule() {
+let activeScheduleRow = -1;
+const DAY_DEFS = [
+  {bit: 1, lbl: 'Lun'},
+  {bit: 2, lbl: 'Mar'},
+  {bit: 3, lbl: 'Mer'},
+  {bit: 4, lbl: 'Gio'},
+  {bit: 5, lbl: 'Ven'},
+  {bit: 6, lbl: 'Sab'},
+  {bit: 0, lbl: 'Dom'}
+];
+const DAY_PRESETS = [
+  {mask: 62,  lbl: 'Lun-Ven'},
+  {mask: 126, lbl: 'Lun-Sab'},
+  {mask: 42,  lbl: 'Lun-Mer-Ven'},
+  {mask: 84,  lbl: 'Mar-Gio-Sab'}
+];
+
+function setActiveScheduleRow(idx) {
+  activeScheduleRow = idx;
+  document.querySelectorAll('#scheduleBody tr').forEach((tr) => {
+    const rowIdx = parseInt(tr.getAttribute('data-row'), 10);
+    tr.classList.toggle('editing-row', rowIdx === idx);
+  });
+}
+
+function updateRowDayUI(idx) {
+  const tr = document.querySelector('#scheduleBody tr[data-row="' + idx + '"]');
+  if (!tr) return;
+  const mask = (scheduleData[idx].days_mask !== undefined) ? scheduleData[idx].days_mask : 126;
+  tr.querySelectorAll('.day-pill').forEach((btn) => {
+    const bit = parseInt(btn.getAttribute('data-bit'), 10);
+    btn.classList.toggle('active', (mask & (1 << bit)) !== 0);
+  });
+  tr.querySelectorAll('.preset-btn').forEach((btn) => {
+    const pMask = parseInt(btn.getAttribute('data-mask'), 10);
+    btn.classList.toggle('active', (mask & 0x7F) === pMask);
+  });
+}
+
+function toggleDayBit(idx, bit) {
+  let mask = (scheduleData[idx].days_mask !== undefined) ? scheduleData[idx].days_mask : 126;
+  mask ^= (1 << bit);
+  scheduleData[idx].days_mask = mask;
+  setActiveScheduleRow(idx);
+  updateRowDayUI(idx);
+}
+
+function applyDayPreset(idx, mask) {
+  scheduleData[idx].days_mask = mask;
+  setActiveScheduleRow(idx);
+  updateRowDayUI(idx);
+}
+
+function renderSchedule(focusIdx = -1, isNewRow = false) {
   const tbody = document.getElementById('scheduleBody');
   tbody.innerHTML = '';
   scheduleData.forEach((item, idx) => {
+    const mask = (item.days_mask !== undefined) ? item.days_mask : 126;
+    const pillsHtml = DAY_DEFS.map(d => {
+      const active = (mask & (1 << d.bit)) !== 0 ? ' active' : '';
+      const domCls = d.bit === 0 ? ' dom-pill' : '';
+      return `<button type="button" class="day-pill${domCls}${active}" data-bit="${d.bit}" onclick="event.stopPropagation();toggleDayBit(${idx},${d.bit})">${d.lbl}</button>`;
+    }).join('');
+    const presetsHtml = DAY_PRESETS.map(p => {
+      const active = (mask & 0x7F) === p.mask ? ' active' : '';
+      return `<button type="button" class="preset-btn${active}" data-mask="${p.mask}" onclick="event.stopPropagation();applyDayPreset(${idx},${p.mask})">${p.lbl}</button>`;
+    }).join('');
+
     const tr = document.createElement('tr');
+    tr.setAttribute('data-row', String(idx));
+    if (idx === activeScheduleRow || idx === focusIdx) {
+      tr.classList.add('editing-row');
+    }
+    if (isNewRow && idx === focusIdx) {
+      tr.classList.add('new-row-flash');
+    }
+    tr.setAttribute('onfocusin', `setActiveScheduleRow(${idx})`);
+    tr.setAttribute('onclick', `setActiveScheduleRow(${idx})`);
+
+    const missingCls = !item.time ? 'input-missing' : '';
     tr.innerHTML = `
       <td>${idx + 1}</td>
-      <td><input type="time" value="${item.time}" onchange="scheduleData[${idx}].time = this.value;"></td>
-      <td><input type="text" maxlength="30" placeholder="Es. 1ª Ora, Ricreazione..." value="${escapeAttr(item.label || 'Campanella')}" style="width:100%;min-width:150px;" oninput="scheduleData[${idx}].label = this.value;"></td>
-      <td><span class="badge badge-ok">Lun - Sab</span></td>
+      <td><input type="time" id="schedTime_${idx}" value="${escapeAttr(item.time || '')}" class="${missingCls}" title="Inserisci l'orario di squillo (HH:MM)" oninput="scheduleData[${idx}].time = this.value; this.classList.toggle('input-missing', !this.value);" onchange="scheduleData[${idx}].time = this.value; this.classList.toggle('input-missing', !this.value);"></td>
+      <td><input type="text" id="schedLabel_${idx}" maxlength="30" placeholder="Es. 1ª Ora, Ricreazione, Uscita..." value="${escapeAttr(item.label || '')}" style="width:100%;min-width:160px;" oninput="scheduleData[${idx}].label = this.value;"></td>
+      <td class="days-cell">
+        <div class="day-pills">${pillsHtml}</div>
+        <div class="day-presets">${presetsHtml}</div>
+      </td>
       <td>
         <label class="switch">
           <input type="checkbox" ${item.enabled ? 'checked' : ''} onchange="scheduleData[${idx}].enabled = this.checked">
           <span class="slider"></span>
         </label>
       </td>
-      <td><button class="btn btn-danger" style="padding:5px 10px" onclick="removeRow(${idx})">✕</button></td>
+      <td><button type="button" class="btn btn-danger" style="padding:5px 10px" onclick="event.stopPropagation();removeRow(${idx})">✕</button></td>
     `;
     tbody.appendChild(tr);
   });
+
+  if (focusIdx >= 0 && focusIdx < scheduleData.length) {
+    const targetRow = tbody.querySelector('tr[data-row="' + focusIdx + '"]');
+    const targetTime = document.getElementById('schedTime_' + focusIdx);
+    if (targetRow) {
+      targetRow.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }
+    if (targetTime) {
+      setTimeout(() => targetTime.focus(), 60);
+    }
+  }
 }
 
 function addScheduleRow() {
-  scheduleData.push({time: '11:10', label: 'Campanella', days_mask: 126, enabled: true});
-  renderSchedule();
+  scheduleData.push({time: '', label: '', days_mask: 126, enabled: true});
+  activeScheduleRow = scheduleData.length - 1;
+  renderSchedule(activeScheduleRow, true);
+  showToast('Nuova riga aggiunta: inserisci orario, etichetta e giorni, poi premi SALVA.');
 }
 
 function removeRow(idx) {
   scheduleData.splice(idx, 1);
-  renderSchedule();
+  if (activeScheduleRow === idx) {
+    activeScheduleRow = -1;
+  } else if (activeScheduleRow > idx) {
+    activeScheduleRow--;
+  }
+  renderSchedule(activeScheduleRow, false);
 }
 
 async function ringNow() {
@@ -583,6 +751,26 @@ async function toggleSuspend(val) {
 }
 
 async function saveSchedule() {
+  for (let i = 0; i < scheduleData.length; i++) {
+    if (!scheduleData[i].time) {
+      setActiveScheduleRow(i);
+      const tEl = document.getElementById('schedTime_' + i);
+      if (tEl) {
+        tEl.classList.add('input-missing');
+        tEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+        tEl.focus();
+      }
+      showToast('⚠️ Inserisci un orario (HH:MM) nella riga #' + (i + 1) + ' prima di salvare!', true);
+      return;
+    }
+    if (!(scheduleData[i].days_mask & 0x7F)) {
+      setActiveScheduleRow(i);
+      const tr = document.querySelector('#scheduleBody tr[data-row="' + i + '"]');
+      if (tr) tr.scrollIntoView({behavior: 'smooth', block: 'center'});
+      showToast('⚠️ Seleziona almeno un giorno attivo nella riga #' + (i + 1) + '!', true);
+      return;
+    }
+  }
   const r = await fetch('/api/schedule', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -590,6 +778,9 @@ async function saveSchedule() {
   });
   const d = await r.json();
   showToast(d.message || 'Orari salvati!', !r.ok);
+  if (r.ok) {
+    activeScheduleRow = -1;
+  }
   loadConfig();
   fetchStatus();
 }
@@ -741,6 +932,68 @@ async function saveApConfig() {
   if (r.ok) {
     document.getElementById('apPwd').value = '';
     loadConfig();
+  }
+}
+
+async function saveDisplaySettings() {
+  let sec = parseInt(document.getElementById('displayTimeoutSec').value, 10);
+  if (isNaN(sec) || sec < 10) sec = 10;
+  if (sec > 3600) sec = 3600;
+  document.getElementById('displayTimeoutSec').value = sec;
+  const sleep_off = document.getElementById('chkDisplaySleepOff').checked;
+  const r = await fetch('/api/display-settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({display_timeout_sec: sec, display_sleep_off: sleep_off})
+  });
+  const d = await r.json();
+  showToast(d.message, !r.ok);
+}
+
+async function saveApPolicy() {
+  let min = parseInt(document.getElementById('apTimeoutMin').value, 10);
+  if (isNaN(min) || min < 0) min = 0;
+  if (min > 120) min = 120;
+  document.getElementById('apTimeoutMin').value = min;
+  const lock = document.getElementById('chkApLockAfterSta').checked;
+  const r = await fetch('/api/ap-policy', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ap_timeout_min: min, ap_lock_after_sta: lock})
+  });
+  const d = await r.json();
+  showToast(d.message, !r.ok);
+}
+
+function downloadBackup() {
+  window.location.href = '/api/backup';
+}
+
+async function uploadRestoreBackup() {
+  const input = document.getElementById('restoreFileInput');
+  if (!input.files || !input.files[0]) {
+    showToast('Seleziona prima un file di backup .json!', true);
+    return;
+  }
+  if (!confirm('Vuoi sovrascrivere orari e impostazioni con il backup selezionato? Il dispositivo si riavvierà al termine.')) {
+    return;
+  }
+  const btn = document.getElementById('btnRestoreBackup');
+  btn.disabled = true;
+  const formData = new FormData();
+  formData.append('backup', input.files[0], input.files[0].name);
+  try {
+    const r = await fetch('/api/restore', {method: 'POST', body: formData});
+    const d = await r.json();
+    showToast(d.message, !r.ok);
+    if (r.ok) {
+      setTimeout(() => { window.location.href = '/login'; }, 6000);
+    } else {
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.disabled = false;
+    showToast('Errore di rete durante il ripristino del backup.', true);
   }
 }
 
@@ -1000,6 +1253,10 @@ void WebServerHandler::setupRoutes() {
         doc["has_school_logo"] = ConfigManager::hasSchoolLogo();
         doc["relay_pulse_ms"] = cfg.relayPulseMs;
         doc["suspended"] = cfg.suspended;
+        doc["display_timeout_sec"] = cfg.displayTimeoutSec;
+        doc["display_sleep_off"] = cfg.displaySleepOff;
+        doc["ap_timeout_min"] = cfg.apTimeoutMin;
+        doc["ap_lock_after_sta"] = cfg.apLockAfterSta;
 
         JsonArray arr = doc["schedule"].to<JsonArray>();
         for (const auto& item : cfg.schedule) {
@@ -1127,16 +1384,37 @@ void WebServerHandler::setupRoutes() {
     );
 
     // 11. API SALVATAGGIO TABELLA ORARI (POST /api/schedule)
+    static std::string s_schedBuf;
     _server.on("/api/schedule", HTTP_POST,
         [](AsyncWebServerRequest* request) {},
         nullptr,
         [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
             if (!isAuthenticated(request)) {
+                s_schedBuf.clear();
                 request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
                 return;
             }
+            if (index == 0) {
+                s_schedBuf.clear();
+            }
+            if (s_schedBuf.size() + len > 32768) {
+                s_schedBuf.clear();
+                request->send(413, "application/json", "{\"message\":\"Tabella orari troppo grande\"}");
+                return;
+            }
+            if (len > 0) {
+                s_schedBuf.append(reinterpret_cast<const char*>(data), len);
+            }
+            if (index + len < total) {
+                return; // Attende gli altri chunk TCP del body JSON
+            }
+
             JsonDocument doc;
-            if (deserializeJson(doc, data, len) || !doc["schedule"].is<JsonArray>()) {
+            DeserializationError jsonErr = deserializeJson(doc, s_schedBuf);
+            s_schedBuf.clear();
+            s_schedBuf.shrink_to_fit();
+
+            if (jsonErr || !doc["schedule"].is<JsonArray>()) {
                 request->send(400, "application/json", "{\"message\":\"Formato orari non valido\"}");
                 return;
             }
@@ -1152,7 +1430,9 @@ void WebServerHandler::setupRoutes() {
                     BellScheduleItem item;
                     item.hour = static_cast<uint8_t>(h);
                     item.minute = static_cast<uint8_t>(m);
-                    item.daysMask = obj["days_mask"] | ConfigManager::DAYS_MON_TO_SAT_MASK;
+                    item.daysMask = obj["days_mask"].is<int>()
+                                        ? static_cast<uint8_t>(obj["days_mask"].as<int>() & 0x7F)
+                                        : ConfigManager::DAYS_MON_TO_SAT_MASK;
                     item.enabled = obj["enabled"] | true;
                     String lblStr = String(obj["label"] | "Campanella");
                     lblStr.trim();
@@ -1323,6 +1603,148 @@ void WebServerHandler::setupRoutes() {
             request->send(500, "application/json", "{\"message\":\"Errore durante il ripristino di fabbrica.\"}");
         }
     });
+
+    // 18. API IMPOSTAZIONI TIMEOUT E SPEGNIMENTO DISPLAY (POST /api/display-settings)
+    _server.on("/api/display-settings", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isAuthenticated(request)) {
+                request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            uint32_t timeoutSec = doc["display_timeout_sec"] | ConfigManager::DEFAULT_DISPLAY_TIMEOUT_SEC;
+            bool sleepOff = doc["display_sleep_off"] | false;
+            if (ConfigManager::setDisplaySettings(timeoutSec, sleepOff)) {
+                GuiManager::requestDisplaySettingsReload();
+                char msg[112];
+                snprintf(msg, sizeof(msg),
+                         "{\"message\":\"✅ Display aggiornato (%u s, %s)\"}",
+                         ConfigManager::getDisplayTimeoutSec(),
+                         sleepOff ? "Spegnimento totale" : "Standby orologio");
+                request->send(200, "application/json", msg);
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore salvataggio impostazioni display\"}");
+            }
+        }
+    );
+
+    // 19. API POLICY SICUREZZA HOTSPOT AP (POST /api/ap-policy)
+    _server.on("/api/ap-policy", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isAuthenticated(request)) {
+                request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            uint16_t apTimeoutMin = doc["ap_timeout_min"] | ConfigManager::DEFAULT_AP_TIMEOUT_MIN;
+            bool apLock = doc["ap_lock_after_sta"] | true;
+            if (ConfigManager::setApPolicy(apTimeoutMin, apLock)) {
+                if (NetworkManager::isStaConnected()) {
+                    NetworkManager::stopFallbackAP();
+                }
+                char msg[112];
+                snprintf(msg, sizeof(msg),
+                         "{\"message\":\"🛡️ Policy Hotspot salvata (Timeout: %u min, Blocco STA: %s)\"}",
+                         ConfigManager::getApTimeoutMin(),
+                         apLock ? "Attivo" : "Disattivo");
+                request->send(200, "application/json", msg);
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore salvataggio policy Hotspot\"}");
+            }
+        }
+    );
+
+    // 20. API EXPORT BACKUP CONFIGURAZIONE (GET /api/backup)
+    _server.on("/api/backup", HTTP_GET, [](AsyncWebServerRequest* request) {
+        if (!isAuthenticated(request)) {
+            request->redirect("/login");
+            return;
+        }
+        String json = ConfigManager::exportConfigJson();
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json; charset=utf-8", json);
+        response->addHeader("Content-Disposition", "attachment; filename=\"chronoring-backup.json\"");
+        response->addHeader("Cache-Control", "no-store");
+        request->send(response);
+    });
+
+    // 21. API IMPORT / RIPRISTINO BACKUP CONFIGURAZIONE (POST /api/restore)
+    static std::string s_restoreBuf;
+    static bool s_restoreTooLarge = false;
+    _server.on("/api/restore", HTTP_POST,
+        [](AsyncWebServerRequest* request) {
+            if (!isAuthenticated(request)) {
+                s_restoreBuf.clear();
+                request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+                return;
+            }
+            if (s_restoreTooLarge) {
+                s_restoreBuf.clear();
+                s_restoreBuf.shrink_to_fit();
+                request->send(413, "application/json", "{\"message\":\"File di backup troppo grande (max 32 KB).\"}");
+                return;
+            }
+            if (s_restoreBuf.empty()) {
+                request->send(400, "application/json", "{\"message\":\"Nessun file di backup ricevuto.\"}");
+                return;
+            }
+
+            String jsonInput(s_restoreBuf.c_str());
+            s_restoreBuf.clear();
+            s_restoreBuf.shrink_to_fit();
+
+            String errMsg;
+            if (ConfigManager::importConfigJson(jsonInput, errMsg)) {
+                AsyncWebServerResponse* response = request->beginResponse(
+                    200, "application/json",
+                    "{\"message\":\"✅ Backup importato correttamente! Riavvio in corso...\"}"
+                );
+                response->addHeader("Connection", "close");
+                request->send(response);
+                Serial.println("[WEB] Backup importato con successo! Riavvio programmato tra 1.5s...");
+                scheduleRestart(1500);
+            } else {
+                JsonDocument errDoc;
+                errDoc["message"] = errMsg.length() ? errMsg : "Errore importazione backup";
+                String out;
+                serializeJson(errDoc, out);
+                request->send(400, "application/json", out);
+            }
+        },
+        [](AsyncWebServerRequest* request, String filename, size_t index, uint8_t* data, size_t len, bool final) {
+            (void)filename;
+            (void)final;
+            if (!isAuthenticated(request)) {
+                return;
+            }
+            if (index == 0) {
+                s_restoreBuf.clear();
+                s_restoreTooLarge = false;
+            }
+            if (s_restoreTooLarge) {
+                return;
+            }
+            if (s_restoreBuf.size() + len > 32768) {
+                s_restoreTooLarge = true;
+                s_restoreBuf.clear();
+                return;
+            }
+            if (len > 0) {
+                s_restoreBuf.append(reinterpret_cast<const char*>(data), len);
+            }
+        }
+    );
 
     // 15. PAGINA E HANDLER AGGIORNAMENTO FIRMWARE OTA (/update)
     _server.on("/update", HTTP_GET, [](AsyncWebServerRequest* request) {

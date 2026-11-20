@@ -27,6 +27,10 @@ struct SystemConfig {
     char schoolName[64];
     uint32_t relayPulseMs;
     bool suspended;
+    uint32_t displayTimeoutSec; // Timeout inattività display (10..3600s, default 60s)
+    bool displaySleepOff;       // false = Standby orologio/logo, true = Spegnimento retroilluminazione
+    uint16_t apTimeoutMin;      // Timeout spegnimento AP senza client (0..120 min, 0 = mai, default 15)
+    bool apLockAfterSta;        // true = spegne e blocca riapertura AP dopo connessione STA alla rete scolastica
     std::vector<BellScheduleItem> schedule;
 };
 
@@ -41,6 +45,11 @@ public:
     static constexpr uint32_t MAX_RELAY_PULSE_MS = 10000; // Hard cap di sicurezza: 10s
     static constexpr uint32_t MIN_RELAY_PULSE_MS = 200;
     static constexpr uint8_t DAYS_MON_TO_SAT_MASK = 0x7E; // 0b01111110 (Lunedì -> Sabato)
+    static constexpr uint32_t DEFAULT_DISPLAY_TIMEOUT_SEC = 60;
+    static constexpr uint32_t MIN_DISPLAY_TIMEOUT_SEC     = 10;
+    static constexpr uint32_t MAX_DISPLAY_TIMEOUT_SEC     = 3600;
+    static constexpr uint16_t DEFAULT_AP_TIMEOUT_MIN      = 15;
+    static constexpr uint16_t MAX_AP_TIMEOUT_MIN          = 120;
 
     static bool begin();
     static SystemConfig getConfig();
@@ -59,6 +68,17 @@ public:
     static bool setApCredentials(const char* apSsid, const char* apPassword);
     static bool resetToFactoryDefaults();
 
+    static bool setDisplaySettings(uint32_t timeoutSec, bool sleepOff);
+    static uint32_t getDisplayTimeoutSec();
+    static bool isDisplaySleepOff();
+
+    static bool setApPolicy(uint16_t apTimeoutMin, bool apLockAfterSta);
+    static uint16_t getApTimeoutMin();
+    static bool isApLockAfterSta();
+
+    static String exportConfigJson();
+    static bool importConfigJson(const String& jsonStr, String& errorOut);
+
     static bool setSchoolName(const char* schoolName);
     static String getSchoolName();
     static bool hasSchoolLogo();
@@ -75,4 +95,6 @@ private:
     static bool loadFromFileInternal();
     static bool saveToFileInternal(const SystemConfig& cfg);
     static uint32_t clampRelayPulse(uint32_t pulseMs);
+    static uint32_t clampDisplayTimeout(uint32_t sec);
+    static uint16_t clampApTimeout(uint16_t min);
 };

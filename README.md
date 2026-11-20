@@ -38,12 +38,12 @@ All'avvio, il firmware esegue una scansione hardware automatica sul bus I2C (`0x
 - **🌐 Web Dashboard & Aggiornamento Firmware OTA**
   - Pannello di controllo responsivo protetto da password amministratore, accessibile tramite indirizzo locale **`http://chronoring.local`** (mDNS) o IP.
   - Gestione in tempo reale di: *Suona Ora (Test Manuale)*, *Sospensione*, *Tabella Orari*, *Durata Impulso Relè*, *Credenziali Wi-Fi*, *Logo e Nome della Scuola*.
-  - **Fallback Access Point automatico**: se la rete Wi-Fi configurata non viene rilevata nell'etere (verifica preventiva con pre-scan), ChronoRing avvia subito l'hotspot **`ChronoRing-Setup`** (aperto di fabbrica, SSID e password WPA2 personalizzabili dalla Dashboard) su IP statico **`192.168.4.1`**, con DHCP Server e **Captive Portal** integrato.
-  - **Ripristino di Fabbrica (Factory Reset)** e gestione completa di: *Suona Ora*, *Sospensione*, *Tabella Orari con etichette*, *Scansione reti Wi-Fi popup*, *Durata Impulso Relè*, *Logo e Nome della Scuola*.
+  - **Fallback Access Point automatico con Blocco/Timeout di Sicurezza**: se la rete Wi-Fi configurata non viene rilevata nell'etere (verifica preventiva con pre-scan), ChronoRing avvia l'hotspot **`ChronoRing-Setup`** (SSID e password WPA2 personalizzabili dalla Dashboard) su IP **`192.168.4.1`** con DHCP Server e **Captive Portal** integrato. Una volta connesso alla rete scolastica (`STA`), l'hotspot si spegne totalmente e rimane bloccato per sicurezza (`ap_lock_after_sta`), oltre a spegnersi automaticamente dopo un timeout di inattività configurabile senza client connessi (`15 min` di default).
+  - **Backup / Ripristino (`.json`), Factory Reset** e gestione completa di: *Suona Ora*, *Sospensione*, *Tabella Orari con etichette*, *Scansione reti Wi-Fi popup*, *Durata Impulso Relè*, *Logo e Nome della Scuola*.
   - Pagina dedicata **`/update`** per l'aggiornamento del firmware **Over-The-Air (OTA)** direttamente dal browser caricando il file `.bin`.
-- **🎨 Interfaccia Touch LVGL v8 & Standby Personalizzabile**
+- **🎨 Interfaccia Touch LVGL v8 & Standby / Spegnimento Display Configurabile**
   - Layout scuro ad alto contrasto (`320x240` Landscape) con orologio digitale grande, countdown prossima campanella, widget meteo **Open-Meteo** con icone vettoriali moderne e configurazione Wi-Fi da schermo.
-  - **Screensaver Standby automatico dopo 60 secondi**: riduce la luminosità della retroilluminazione (PWM a `15%`) per preservare il pannello IPS e mostra un orologio a tutto schermo accompagnato dal **Logo** e dal **Nome dell'Istituto Scolastico** caricati dalla Dashboard Web.
+  - **Standby o Spegnimento Display con Timeout Personalizzabile**: dalla Dashboard puoi scegliere la durata del timeout (`10–3600 s`, default `60 s`) e decidere se mostrare la schermata di **Standby** (orologio + Logo e Nome dell'Istituto a luminosità ridotta) oppure **spegnere completamente** la retroilluminazione (`0%`). In entrambi i casi lo schermo si riaccende subito al tocco o su evento campanella/sistema.
 
 ---
 
@@ -140,6 +140,7 @@ pio device monitor
 - `t` : Attiva manualmente la campanella per la durata configurata (`Suona Ora`).
 - `s` : Arresta immediatamente il relè (`Force Off`).
 - `w` : Forza un aggiornamento immediato dei dati meteo da Open-Meteo.
+- `a` : Riattiva manualmente l'Hotspot AP (se spento per timeout).
 - `p` : Stampa il report diagnostico completo (Orario, Rete, Prossimo Suono, Meteo, LittleFS).
 
 ---

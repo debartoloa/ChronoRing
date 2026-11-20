@@ -36,6 +36,19 @@ public:
     static void requestApRestart();
 
     /**
+     * @brief Arresta completamente l'Access Point di fallback e passa a WIFI_STA puro.
+     */
+    static void stopFallbackAP();
+
+    /**
+     * @brief Richiede l'attivazione manuale dell'Hotspot AP (es. via comando seriale dopo timeout).
+     */
+    static void requestManualApStart();
+
+    static bool isApTimedOut();
+    static bool isApLocked();
+
+    /**
      * @brief Restituisce true se l'orologio RTC interno è sincronizzato via NTP (anno >= 2024).
      */
     static bool isTimeSynced();
@@ -90,8 +103,12 @@ private:
     static volatile bool _ntpConfigured;
     static volatile bool _reconnectRequested;
     static volatile bool _apRestartRequested;
+    static volatile bool _forceStartApRequested;
     static volatile bool _scanInProgress;
     static volatile uint32_t _lastScanTimestampMs;
+    static volatile bool _hasConnectedStaOnce;
+    static volatile bool _apTimedOut;
+    static uint32_t _apLastActivityMs;
     static TaskHandle_t _netTaskHandle;
 
     static void networkTask(void* pvParameters);

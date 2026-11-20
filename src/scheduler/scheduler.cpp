@@ -39,9 +39,10 @@ void Scheduler::checkAndTriggerBell() {
         return;
     }
 
-    // 1. Verifica giorni lavorativi scolastici: Lunedì (1) -> Sabato (6). Domenica = 0.
+    // 1. Verifica indice giorno valido (0 = Dom .. 6 = Sab); il filtro sui giorni attivi
+    // viene gestito per ogni singola campanella tramite item.daysMask.
     int wday = timeinfo.tm_wday;
-    if (wday < 1 || wday > 6) {
+    if (wday < 0 || wday > 6) {
         return;
     }
 
@@ -110,9 +111,9 @@ bool Scheduler::getNextBellDetails(String& eventLabel, String& countdownStr) {
     }
 
     int wday = timeinfo.tm_wday;
-    if (wday < 1 || wday > 6) {
-        eventLabel = "Domenica";
-        countdownStr = "Lun 08:10";
+    if (wday < 0 || wday > 6) {
+        eventLabel = "Orario non valido";
+        countdownStr = "--m --s";
         return false;
     }
 
@@ -121,11 +122,13 @@ bool Scheduler::getNextBellDetails(String& eventLabel, String& countdownStr) {
     int bestSecOfDay = 24 * 3600 + 1;
     uint8_t bestH = 0, bestM = 0;
     char bestLabel[32] = "Campanella";
+    bool anyEnabledToday = false;
 
     for (const auto& item : cfg.schedule) {
         if (!item.enabled) continue;
         if ((item.daysMask & todayBit) == 0) continue;
 
+        anyEnabledToday = true;
         int itemSecOfDay = item.hour * 3600 + item.minute * 60;
         if (itemSecOfDay > currentSecOfDay && itemSecOfDay < bestSecOfDay) {
             bestSecOfDay = itemSecOfDay;
@@ -157,8 +160,13 @@ bool Scheduler::getNextBellDetails(String& eventLabel, String& countdownStr) {
         return true;
     }
 
-    eventLabel = "Fine lezioni oggi";
-    countdownStr = "A domani";
+    if (!anyEnabledToday) {
+        eventLabel = (wday == 0) ? "Domenica" : "Nessun suono oggi";
+        countdownStr = "Riposo";
+    } else {
+        eventLabel = "Fine lezioni oggi";
+        countdownStr = "A domani";
+    }
     return false;
 }
 

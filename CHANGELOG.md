@@ -5,6 +5,21 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-20
+
+### Added
+- **Gestione Timeout Display Configurabile (Standby vs Spegnimento Totale)**:
+  - Aggiunti `display_timeout_sec` (`10..3600` secondi, default `60 s`) e `display_sleep_off` (`false` = Standby orologio/logo a luminosità ridotta, `true` = Spegnimento totale retroilluminazione `0%` su schermo nero) in `/config.json` e nella Dashboard Web (`POST /api/display-settings`).
+  - Risveglio immediato dello schermo in entrambe le modalità tramite tocco touch oppure al verificarsi di un evento (attivazione relè campanella o cambio stato da Web).
+- **Backup & Ripristino Configurazione (`Export / Import JSON`)**:
+  - Endpoint `GET /api/backup` e pulsante **Scarica Backup (.json)** per esportare orari, etichette e tutte le impostazioni in `chronoring-backup.json`.
+  - Endpoint `POST /api/restore` (upload multipart con validazione rigorosa e controllo campi) e pulsante **Ripristina da Backup** nella Dashboard Web, con riavvio automatico al termine.
+- **Blocco / Timeout Sicurezza dell'Hotspot Access Point (`NetworkManager`)**:
+  - Aggiunti `ap_lock_after_sta` (`true` di default: spegne totalmente la SoftAP in modalità STA e blocca la riapertura automatica di hotspot non presidiati se cade temporaneamente la rete scolastica) e `ap_timeout_min` (`0..120` min, default `15 min`: spegne l'hotspot dopo il timeout senza client connessi), configurabili da Web (`POST /api/ap-policy`) e riattivabili via comando seriale `'a'`.
+- **Programmazione Orari & Giorni per Singola Campanella (`Dashboard Web`, `Scheduler`)**:
+  - Il pulsante `+ Aggiungi Orario` crea ora una riga pulita (orario ed etichetta vuoti con placeholder guida), evidenzia visivamente la riga in modifica (`.editing-row` + animazione) e sposta automaticamente scroll e focus sul campo orario; aggiunta validazione prima del salvataggio.
+  - Selettore giorni per singola campanella (`Lun`–`Dom`) con 7 pillole cliccabili e 4 preset rapidi 1-clic (`Lun-Ven`, `Lun-Sab`, `Lun-Mer-Ven`, `Mar-Gio-Sab`), con supporto bitmask completo a 7 giorni nello `Scheduler` e chunking multi-pacchetto su `POST /api/schedule`.
+
 ## [1.2.0] - 2026-11-18
 
 ### Added
