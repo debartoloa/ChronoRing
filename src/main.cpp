@@ -86,8 +86,9 @@ void setup() {
     Serial.printf("[MAIN] ChronoRing operativo in modalità: %s\n",
                   g_has_display ? "DISPLAY TOUCH (GUI LVGL + Web + Scheduler)"
                                 : "HEADLESS (Solo Web Server + Scheduler + Relè)");
-    Serial.printf(" - Dashboard Web : http://%s.local (oppure http://%s)\n",
-                  NetworkManager::MDNS_HOSTNAME, NetworkManager::getIpAddress().c_str());
+    Serial.printf(" - Dashboard Web : http://%s.local / http://%s (oppure http://%s)\n",
+                  NetworkManager::MDNS_HOSTNAME, NetworkManager::MDNS_HOSTNAME,
+                  NetworkManager::getIpAddress().c_str());
     Serial.printf(" - Pagina OTA    : http://%s.local/update\n", NetworkManager::MDNS_HOSTNAME);
     Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'a'=Attiva AP, 'm'=Riavvia mDNS, 'p'=Diagnostica");
     Serial.println("==================================================");
@@ -146,9 +147,11 @@ void loop() {
                               NetworkManager::getNetworkModeString().c_str(),
                               NetworkManager::getIpAddress().c_str(),
                               (long)NetworkManager::getRssi());
-                Serial.printf(" - Statistiche WiFi: disconnessioni=%lu | restart mDNS=%lu\n",
+                Serial.printf(" - Statistiche WiFi: disconnessioni=%lu | restart mDNS=%lu | keepalive IGMP/mDNS=%lu | peer mDNS RX=%s\n",
                               (unsigned long)NetworkManager::getStaDisconnectCount(),
-                              (unsigned long)NetworkManager::getMdnsRestartCount());
+                              (unsigned long)NetworkManager::getMdnsRestartCount(),
+                              (unsigned long)NetworkManager::getMdnsKeepaliveCount(),
+                              NetworkManager::hasMulticastRxPeers() ? "SI" : "N/D");
                 Serial.printf(" - Prossimo Suono : %s\n", Scheduler::getNextBellString().c_str());
                 Serial.printf(" - Meteo          : %s | %.1f C | Umidita %d%% | Vento %.1f km/h\n",
                               wd.conditionText, wd.temperatureC, wd.humidityPct, wd.windSpeedKmh);

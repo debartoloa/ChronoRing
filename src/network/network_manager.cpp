@@ -3,10 +3,19 @@
 #include "../config_manager.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <NetBIOS.h>
 #include <DNSServer.h>
 #include <ArduinoJson.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
+#include <mdns.h>
+#include <esp_netif.h>
+#include <esp_netif_net_stack.h>
+#include <lwip/tcpip.h>
+#include <lwip/netif.h>
+#include <lwip/igmp.h>
+#include <lwip/udp.h>
+#include <lwip/pbuf.h>
 
 static DNSServer s_dnsServer;
 static const IPAddress AP_LOCAL_IP(192, 168, 4, 1);
@@ -18,6 +27,7 @@ static constexpr uint8_t  AP_FIXED_CHANNEL = 1;
 volatile bool NetworkManager::_staConnected = false;
 volatile bool NetworkManager::_apActive = false;
 volatile bool NetworkManager::_mdnsStarted = false;
+volatile bool NetworkManager::_nbnsStarted = false;
 volatile bool NetworkManager::_ntpConfigured = false;
 volatile bool NetworkManager::_reconnectRequested = false;
 volatile bool NetworkManager::_apRestartRequested = false;
@@ -31,9 +41,12 @@ volatile bool NetworkManager::_mdnsRefreshRequested = false;
 volatile bool NetworkManager::_staLostIpEvent = false;
 volatile uint32_t NetworkManager::_staDisconnectCount = 0;
 volatile uint32_t NetworkManager::_mdnsRestartCount = 0;
+volatile uint32_t NetworkManager::_mdnsKeepaliveCount = 0;
 volatile bool NetworkManager::_dnsEverWorked = false;
 volatile uint8_t NetworkManager::_consecutiveHealthFails = 0;
-uint32_t NetworkManager::_lastMdnsRefreshMs = 0;
+volatile bool NetworkManager::_mcastRxEverWorked = false;
+volatile uint8_t NetworkManager::_consecutiveMcastRxFails = 0;
+uint32_t NetworkManager::_lastMdnsKeepaliveMs = 0;
 bool NetworkManager::_wifiEventRegistered = false;
 TaskHandle_t NetworkManager::_netTaskHandle = nullptr;
 
@@ -41,12 +54,85 @@ constexpr const char* NetworkManager::MDNS_HOSTNAME;
 constexpr const char* NetworkManager::FALLBACK_AP_SSID;
 constexpr const char* NetworkManager::FALLBACK_AP_PASS;
 constexpr uint32_t NetworkManager::WIFI_CONNECT_TIMEOUT_MS;
-constexpr uint32_t NetworkManager::MDNS_REFRESH_INTERVAL_MS;
+constexpr uint32_t NetworkManager::MDNS_KEEPALIVE_INTERVAL_MS;
 constexpr uint32_t NetworkManager::WIFI_HEALTH_CHECK_INTERVAL_MS;
 constexpr uint8_t  NetworkManager::WIFI_ZOMBIE_FAIL_THRESHOLD;
+constexpr uint8_t  NetworkManager::WIFI_MCAST_FAIL_THRESHOLD;
 constexpr const char* NetworkManager::TZ_ITALY_POSIX;
 constexpr const char* NetworkManager::NTP_SERVER_1;
 constexpr const char* NetworkManager::NTP_SERVER_2;
+
+// Eseguito sul thread TCPIP lwIP per evitare data-race su netif/IGMP/PCB:
+// invia un IGMP Membership Report aggiornato e un annuncio mDNS unsolicited (RFC 6762).
+static void s_mdnsIgmpKeepaliveCb(void* arg) {
+    bool forceRejoin = (arg != nullptr);
+
+    esp_netif_t* staNetif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!staNetif) return;
+
+    struct netif* lwipNetif = static_cast<struct netif*>(esp_netif_get_netif_impl(staNetif));
+    if (!lwipNetif || !netif_is_up(lwipNetif) || ip4_addr_isany_val(*netif_ip4_addr(lwipNetif))) {
+        return;
+    }
+
+    ip4_addr_t mdnsGroup;
+    IP4_ADDR(&mdnsGroup, 224, 0, 0, 251);
+
+    if (forceRejoin) {
+        igmp_leavegroup_netif(lwipNetif, &mdnsGroup);
+        igmp_joingroup_netif(lwipNetif, &mdnsGroup);
+    } else if (igmp_lookfor_group(lwipNetif, &mdnsGroup) == nullptr) {
+        igmp_joingroup_netif(lwipNetif, &mdnsGroup);
+    }
+    igmp_report_groups(lwipNetif);
+
+    size_t hlen = strlen(NetworkManager::MDNS_HOSTNAME);
+    if (hlen == 0 || hlen > 63) return;
+
+    uint8_t pkt[96];
+    // Header DNS mDNS: ID=0, Flags=0x8400 (QR=1, AA=1), QDCOUNT=0, ANCOUNT=1, NSCOUNT=0, ARCOUNT=0
+    pkt[0]  = 0x00; pkt[1]  = 0x00;
+    pkt[2]  = 0x84; pkt[3]  = 0x00;
+    pkt[4]  = 0x00; pkt[5]  = 0x00;
+    pkt[6]  = 0x00; pkt[7]  = 0x01;
+    pkt[8]  = 0x00; pkt[9]  = 0x00;
+    pkt[10] = 0x00; pkt[11] = 0x00;
+
+    size_t pos = 12;
+    pkt[pos++] = static_cast<uint8_t>(hlen);
+    memcpy(&pkt[pos], NetworkManager::MDNS_HOSTNAME, hlen);
+    pos += hlen;
+    pkt[pos++] = 5;
+    pkt[pos++] = 'l'; pkt[pos++] = 'o'; pkt[pos++] = 'c'; pkt[pos++] = 'a'; pkt[pos++] = 'l';
+    pkt[pos++] = 0x00;
+
+    // RR Type A (0x0001), Class IN + Cache-Flush (0x8001), TTL 120s (0x00000078), RDLENGTH 4
+    pkt[pos++] = 0x00; pkt[pos++] = 0x01;
+    pkt[pos++] = 0x80; pkt[pos++] = 0x01;
+    pkt[pos++] = 0x00; pkt[pos++] = 0x00; pkt[pos++] = 0x00; pkt[pos++] = 0x78;
+    pkt[pos++] = 0x00; pkt[pos++] = 0x04;
+    memcpy(&pkt[pos], &netif_ip4_addr(lwipNetif)->addr, 4);
+    pos += 4;
+
+    struct udp_pcb* pcb = udp_new();
+    if (!pcb) return;
+
+    pcb->local_port = 5353;
+    pcb->ttl = 255;
+#if LWIP_MULTICAST_TX_OPTIONS
+    pcb->mcast_ttl = 255;
+#endif
+
+    struct pbuf* p = pbuf_alloc(PBUF_TRANSPORT, static_cast<u16_t>(pos), PBUF_RAM);
+    if (p) {
+        memcpy(p->payload, pkt, pos);
+        ip_addr_t mdnsDst;
+        IP_ADDR4(&mdnsDst, 224, 0, 0, 251);
+        udp_sendto_if_src(pcb, p, &mdnsDst, 5353, lwipNetif, netif_ip_addr4(lwipNetif));
+        pbuf_free(p);
+    }
+    udp_remove(pcb);
+}
 
 static void s_onWifiEvent(WiFiEvent_t event) {
     NetworkManager::notifyWifiEvent(static_cast<int>(event));
@@ -99,6 +185,7 @@ void NetworkManager::begin() {
         startFallbackAP();
     } else {
         setupMdnsAndNtp(true);
+        _mdnsRefreshRequested = false; // Evita un secondo restart mDNS 10ms dopo il boot per l'evento GOT_IP
     }
 
     // Avvia il task FreeRTOS dedicato alla rete su CHRONO_NET_CORE (Core 0)
@@ -368,6 +455,12 @@ bool NetworkManager::isApLocked() {
     return _hasConnectedStaOnce && ConfigManager::isApLockAfterSta();
 }
 
+void NetworkManager::sendMdnsAndIgmpKeepalive(bool forceIgmpRejoin) {
+    tcpip_callback(s_mdnsIgmpKeepaliveCb, forceIgmpRejoin ? reinterpret_cast<void*>(1) : nullptr);
+    _lastMdnsKeepaliveMs = millis();
+    _mdnsKeepaliveCount = _mdnsKeepaliveCount + 1;
+}
+
 void NetworkManager::restartMdns() {
     if (_mdnsStarted) {
         MDNS.end();
@@ -380,11 +473,13 @@ void NetworkManager::restartMdns() {
         MDNS.addService("http", "tcp", 80);
         _mdnsStarted = true;
         _mdnsRestartCount = _mdnsRestartCount + 1;
-        _lastMdnsRefreshMs = millis();
+        _lastMdnsKeepaliveMs = millis();
+        if (_staConnected) {
+            sendMdnsAndIgmpKeepalive(false);
+        }
         Serial.printf("[NET] mDNS (ri)avviato: http://%s.local | IP: %s (refresh #%lu)\n",
                       MDNS_HOSTNAME, getIpAddress().c_str(), (unsigned long)_mdnsRestartCount);
     } else {
-        _lastMdnsRefreshMs = millis();
         Serial.println("[NET] Avviso: Inizializzazione mDNS non riuscita.");
     }
 }
@@ -392,6 +487,13 @@ void NetworkManager::restartMdns() {
 void NetworkManager::setupMdnsAndNtp(bool forceMdnsRestart) {
     if (forceMdnsRestart || !_mdnsStarted) {
         restartMdns();
+    }
+
+    if (_staConnected && !_nbnsStarted) {
+        if (NBNS.begin(MDNS_HOSTNAME)) {
+            _nbnsStarted = true;
+            Serial.printf("[NET] NetBIOS avviato: http://%s\n", MDNS_HOSTNAME);
+        }
     }
 
     if (_staConnected && !_ntpConfigured) {
@@ -423,6 +525,14 @@ uint32_t NetworkManager::getStaDisconnectCount() {
 
 uint32_t NetworkManager::getMdnsRestartCount() {
     return _mdnsRestartCount;
+}
+
+uint32_t NetworkManager::getMdnsKeepaliveCount() {
+    return _mdnsKeepaliveCount;
+}
+
+bool NetworkManager::hasMulticastRxPeers() {
+    return _mcastRxEverWorked;
 }
 
 void NetworkManager::requestReconnect() {
@@ -485,6 +595,7 @@ void NetworkManager::networkTask(void* pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(200));
             if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
                 setupMdnsAndNtp(true);
+                _mdnsRefreshRequested = false;
             } else if (!isApLocked() && !_apTimedOut) {
                 startFallbackAP();
             }
@@ -507,6 +618,7 @@ void NetworkManager::networkTask(void* pvParameters) {
             if (!_staConnected) {
                 _staConnected = true;
                 _consecutiveHealthFails = 0;
+                _consecutiveMcastRxFails = 0;
                 disableWifiPowerSave();
                 Serial.printf("[NET] Connessione Wi-Fi ripristinata! IP: %s\n",
                               WiFi.localIP().toString().c_str());
@@ -522,15 +634,22 @@ void NetworkManager::networkTask(void* pvParameters) {
                 _mdnsRefreshRequested = true;
             }
 
-            // Rinnovo mDNS su evento GOT_IP / cambio DHCP oppure periodicamente ogni 30 minuti
-            if (_mdnsRefreshRequested || !_mdnsStarted ||
-                (millis() - _lastMdnsRefreshMs >= MDNS_REFRESH_INTERVAL_MS)) {
+            // Riavvia mDNS SOLO quando richiesto da evento GOT_IP / cambio interfaccia oppure se non avviato
+            // (niente MDNS.end() periodico che invia IGMP Leave al router)
+            if (_mdnsRefreshRequested || !_mdnsStarted) {
                 _mdnsRefreshRequested = false;
                 disableWifiPowerSave();
-                restartMdns();
+                setupMdnsAndNtp(true);
             }
 
-            // Watchdog adattivo anti-stato "zombie": rileva espulsioni silenti dal router/DHCP
+            // Ogni 45s invia IGMP Membership Report + annuncio mDNS unsolicited per prevenire pruning IGMP snooping
+            if (_mdnsStarted && !scanGraceActive &&
+                (millis() - _lastMdnsKeepaliveMs >= MDNS_KEEPALIVE_INTERVAL_MS)) {
+                disableWifiPowerSave();
+                sendMdnsAndIgmpKeepalive(false);
+            }
+
+            // Watchdog adattivo: rileva stato "zombie" DHCP/DNS e perdita RX multicast (es. GTK rekey)
             if (!scanGraceActive && (millis() - lastHealthCheckMs >= WIFI_HEALTH_CHECK_INTERVAL_MS)) {
                 lastHealthCheckMs = millis();
                 disableWifiPowerSave();
@@ -545,14 +664,61 @@ void NetworkManager::networkTask(void* pvParameters) {
                                   _consecutiveHealthFails, WIFI_ZOMBIE_FAIL_THRESHOLD);
                 }
 
+                bool triggeredStaReset = false;
                 if (_consecutiveHealthFails >= WIFI_ZOMBIE_FAIL_THRESHOLD) {
                     Serial.println("[NET] Watchdog STA: rilevato stato Wi-Fi zombie, riavvio associazione...");
+                    triggeredStaReset = true;
+                } else if (_mdnsStarted) {
+                    // Verifica ricezione multicast reale interrogando eventuali altri responder _http._tcp sulla LAN
+                    bool mcastRxOk = false;
+                    mdns_result_t* mres = nullptr;
+                    esp_err_t merr = mdns_query_ptr("_http", "_tcp", 1500, 5, &mres);
+                    if (merr == ESP_OK && mres != nullptr) {
+                        IPAddress selfIp = WiFi.localIP();
+                        for (mdns_result_t* r = mres; r != nullptr; r = r->next) {
+                            for (mdns_ip_addr_t* a = r->addr; a != nullptr; a = a->next) {
+                                if (a->addr.type == ESP_IPADDR_TYPE_V4) {
+                                    if (IPAddress(a->addr.u_addr.ip4.addr) != selfIp) {
+                                        mcastRxOk = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (mcastRxOk) break;
+                        }
+                    }
+                    if (mres != nullptr) {
+                        mdns_query_results_free(mres);
+                    }
+
+                    if (mcastRxOk) {
+                        _mcastRxEverWorked = true;
+                        _consecutiveMcastRxFails = 0;
+                    } else if (_mcastRxEverWorked) {
+                        if (_consecutiveMcastRxFails < 255) {
+                            _consecutiveMcastRxFails = _consecutiveMcastRxFails + 1;
+                        }
+                        Serial.printf("[NET] Avviso Watchdog Multicast: nessun peer mDNS RX (%u/%u).\n",
+                                      _consecutiveMcastRxFails, WIFI_MCAST_FAIL_THRESHOLD);
+                        if (_consecutiveMcastRxFails == 1) {
+                            // Primo tentativo leggero: forza rejoin IGMP + report immediato
+                            sendMdnsAndIgmpKeepalive(true);
+                        } else if (_consecutiveMcastRxFails >= WIFI_MCAST_FAIL_THRESHOLD) {
+                            Serial.println("[NET] Watchdog Multicast/GTK: RX multicast bloccato, riavvio associazione STA...");
+                            triggeredStaReset = true;
+                        }
+                    }
+                }
+
+                if (triggeredStaReset) {
                     _consecutiveHealthFails = 0;
+                    _consecutiveMcastRxFails = 0;
                     _staConnected = false;
                     WiFi.disconnect(false, false);
                     vTaskDelay(pdMS_TO_TICKS(500));
                     if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, true)) {
                         setupMdnsAndNtp(true);
+                        _mdnsRefreshRequested = false;
                     }
                     lastRetryMs = millis();
                     lastHealthCheckMs = millis();
@@ -608,6 +774,7 @@ void NetworkManager::networkTask(void* pvParameters) {
                             Serial.printf("[NET] Rete '%s' nuovamente visibile: tentativo di riconnessione...\n", cfg.wifiSsid);
                             if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, true)) {
                                 setupMdnsAndNtp(true);
+                                _mdnsRefreshRequested = false;
                             } else if (!isApLocked() && !_apTimedOut) {
                                 startFallbackAP();
                             }

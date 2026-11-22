@@ -14,9 +14,10 @@ public:
     static constexpr const char* FALLBACK_AP_SSID           = "ChronoRing-Setup";
     static constexpr const char* FALLBACK_AP_PASS           = ""; // AP aperto per configurazione immediata
     static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS       = 20000;
-    static constexpr uint32_t MDNS_REFRESH_INTERVAL_MS      = 30UL * 60UL * 1000UL; // 30 minuti
+    static constexpr uint32_t MDNS_KEEPALIVE_INTERVAL_MS    = 45UL * 1000UL;        // 45s (IGMP snooping & RFC 6762 keepalive)
     static constexpr uint32_t WIFI_HEALTH_CHECK_INTERVAL_MS = 5UL * 60UL * 1000UL;  // 5 minuti
-    static constexpr uint8_t  WIFI_ZOMBIE_FAIL_THRESHOLD    = 4;                    // ~20 min di fallimenti consecutivi
+    static constexpr uint8_t  WIFI_ZOMBIE_FAIL_THRESHOLD    = 4;                    // ~20 min di fallimenti DNS consecutivi
+    static constexpr uint8_t  WIFI_MCAST_FAIL_THRESHOLD     = 3;                    // ~15 min di assenza RX multicast (GTK)
 
     // Stringa POSIX per fuso orario Italiano (CET/CEST con cambio ora solare/legale automatico)
     static constexpr const char* TZ_ITALY_POSIX      = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -103,11 +104,14 @@ public:
     static void notifyWifiEvent(int eventId);
     static uint32_t getStaDisconnectCount();
     static uint32_t getMdnsRestartCount();
+    static uint32_t getMdnsKeepaliveCount();
+    static bool hasMulticastRxPeers();
 
 private:
     static volatile bool _staConnected;
     static volatile bool _apActive;
     static volatile bool _mdnsStarted;
+    static volatile bool _nbnsStarted;
     static volatile bool _ntpConfigured;
     static volatile bool _reconnectRequested;
     static volatile bool _apRestartRequested;
@@ -121,9 +125,12 @@ private:
     static volatile bool _staLostIpEvent;
     static volatile uint32_t _staDisconnectCount;
     static volatile uint32_t _mdnsRestartCount;
+    static volatile uint32_t _mdnsKeepaliveCount;
     static volatile bool _dnsEverWorked;
     static volatile uint8_t _consecutiveHealthFails;
-    static uint32_t _lastMdnsRefreshMs;
+    static volatile bool _mcastRxEverWorked;
+    static volatile uint8_t _consecutiveMcastRxFails;
+    static uint32_t _lastMdnsKeepaliveMs;
     static bool _wifiEventRegistered;
     static TaskHandle_t _netTaskHandle;
 
@@ -132,5 +139,6 @@ private:
     static void startFallbackAP();
     static void setupMdnsAndNtp(bool forceMdnsRestart = false);
     static void restartMdns();
+    static void sendMdnsAndIgmpKeepalive(bool forceIgmpRejoin = false);
     static void disableWifiPowerSave();
 };

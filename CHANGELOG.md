@@ -5,6 +5,21 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-11-22
+
+### Fixed
+- **Risolto il blocco del multicast `chronoring.local` dopo ~2 ore (IGMP Snooping Pruning & GTK Rekey)**:
+  - Diagnosi diretta sulla scheda in rete (`192.168.8.76`): confermato che server HTTP, ping e query mDNS unicast sulla porta `5353` continuavano a rispondere, mentre il router/AP smetteva di inoltrare i pacchetti multicast `224.0.0.251:5353` verso l'ESP32-S3 dopo il timeout della tabella IGMP snooping (e dopo eventuali rotazioni chiave Wi-Fi GTK / `MDNS.end()` periodici).
+  - Rimosso il teardown periodico `MDNS.end()` che inviava pacchetti `IGMP Leave` al router e risolto il race condizionale post-boot di `_mdnsRefreshRequested`.
+  - Aggiunto keepalive nativo ogni **45 secondi** sul thread TCPIP lwIP (`s_mdnsIgmpKeepaliveCb`): verifica/ripristina l'iscrizione a `224.0.0.251`, trasmette un `IGMP Membership Report` (`igmp_report_groups`) e invia un annuncio mDNS *unsolicited* A-record conforme RFC 6762 (`TTL 120s`, `TTL IP 255`) senza conflitti con il PCB di `ESPmDNS`.
+  - Esteso il Watchdog ogni **5 minuti** con sonda reale di ricezione multicast (`mdns_query_ptr("_http", "_tcp")`): se altri responder nella LAN diventano improvvisamente irraggiungibili (`3` controlli consecutivi, dopo almeno un riscontro positivo), forza `IGMP rejoin` prima ed eventuale riassociazione STA poi per ripristinare il filtro/chiave WPA2 GTK.
+
+### Added
+- **Fallback NetBIOS (`NBNS`) per Windows (`NetworkManager`)**:
+  - Avviato `NBNS.begin("chronoring")` in modalità STA per consentire l'accesso dalla LAN Windows anche tramite `http://chronoring/` (UDP 137 broadcast) oltre a `http://chronoring.local/`.
+- **Diagnostica IGMP/Multicast nel Report Seriale (`main.cpp`)**:
+  - Aggiunti il contatore `keepalive IGMP/mDNS` e lo stato `peer mDNS RX` al comando seriale `'p'`.
+
 ## [1.3.1] - 2026-11-22
 
 ### Fixed
