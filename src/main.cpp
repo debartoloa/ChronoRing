@@ -14,7 +14,12 @@
  * @brief ChronoRing - Firmware Universale Multi-Board con Autorilevamento Display Touch / Modalità Headless
  */
 
+// Firma versione incorporata nel binario .bin (estraibile pre-OTA senza flashare)
+static const char __attribute__((used)) FW_VERSION_SIGNATURE[] = "FW_VER=" CHRONORING_FW_VERSION;
+
 void printSystemBanner() {
+    volatile const char* volatile fwSigKeep = FW_VERSION_SIGNATURE;
+    (void)fwSigKeep;
     Serial.println("\n==================================================");
     Serial.println("             C H R O N O R I N G                  ");
     Serial.println("   Sistema Automazione Campanella Scolastica      ");
@@ -90,7 +95,7 @@ void setup() {
                   NetworkManager::MDNS_HOSTNAME, NetworkManager::MDNS_HOSTNAME,
                   NetworkManager::getIpAddress().c_str());
     Serial.printf(" - Pagina OTA    : http://%s.local/update\n", NetworkManager::MDNS_HOSTNAME);
-    Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'a'=Attiva AP, 'm'=Riavvia mDNS, 'p'=Diagnostica");
+    Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'a'=Attiva AP, 'm'=Riavvia mDNS, 'p'=Diagnostica, 'R'=Reset SuperPwd(x2)");
     Serial.println("==================================================");
 }
 
@@ -127,6 +132,22 @@ void loop() {
             case 'M': {
                 Serial.println("[NET] Comando manuale: richiesta riavvio mDNS...");
                 NetworkManager::requestMdnsRefresh();
+                break;
+            }
+            case 'R': {
+                static uint32_t lastResetSuperReqMs = 0;
+                uint32_t now = millis();
+                if (lastResetSuperReqMs != 0 && (now - lastResetSuperReqMs <= 5000)) {
+                    lastResetSuperReqMs = 0;
+                    if (ConfigManager::clearSuperPassword()) {
+                        Serial.println("[SEC] >>> Super Password Tecnico azzerata da seriale USB! Wizard iniziale nuovamente attivo al prossimo login. <<<");
+                    } else {
+                        Serial.println("[SEC] ERRORE durante la rimozione della Super Password Tecnico.");
+                    }
+                } else {
+                    lastResetSuperReqMs = (now != 0) ? now : 1;
+                    Serial.println("[SEC] CONFERMA RICHIESTA: premi nuovamente 'R' maiuscolo entro 5 secondi per azzerare la Super Password Tecnico.");
+                }
                 break;
             }
             case 'p':

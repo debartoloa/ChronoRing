@@ -13,9 +13,15 @@
 
 AsyncWebServer WebServerHandler::_server(80);
 char WebServerHandler::_sessionToken[40] = {0};
+WebServerHandler::AuthRole WebServerHandler::_sessionRole = WebServerHandler::AuthRole::NONE;
+uint8_t WebServerHandler::_failedLoginAttempts = 0;
+uint32_t WebServerHandler::_loginLockUntilMs = 0;
 bool WebServerHandler::_otaInProgress = false;
 bool WebServerHandler::_otaSuccess = false;
 String WebServerHandler::_otaError = "";
+
+constexpr uint8_t  WebServerHandler::MAX_FAILED_LOGIN_ATTEMPTS;
+constexpr uint32_t WebServerHandler::LOGIN_LOCKOUT_MS;
 
 // ============================================================================
 // PAGINE HTML EMBEDDED IN FLASH (PROGMEM) - TEMA "CHRONORING"
@@ -82,10 +88,11 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({password: document.getElementById('pwd').value})
     });
+    const d = await res.json().catch(() => ({}));
     if (res.ok) {
-      window.location.href = '/';
+      window.location.href = d.needs_super_setup ? '/setup-super' : '/';
     } else {
-      err.textContent = 'Password errata. Riprova.';
+      err.textContent = d.error || 'Password errata. Riprova.';
     }
   } catch (ex) {
     err.textContent = 'Errore di connessione al dispositivo.';
@@ -186,7 +193,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
       <circle cx="60" cy="87" r="6" fill="#fbbf24"/>
     </svg>
     <div>
-      <h1>ChronoRing <span id="fwHeaderBadge" class="badge badge-ok" style="font-size:0.72rem;vertical-align:middle;margin-left:8px;">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</span></h1>
+      <h1>ChronoRing <span id="fwHeaderBadge" class="badge badge-ok" style="font-size:0.72rem;vertical-align:middle;margin-left:8px;">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</span><span id="superBadge" class="badge badge-warn" style="display:none;font-size:0.72rem;vertical-align:middle;margin-left:6px;">🛠️ MODALITÀ TECNICO</span></h1>
       <span id="netInfo">Connessione in corso...</span>
     </div>
   </div>
@@ -418,6 +425,45 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
       </div>
     </div>
   </div>
+
+  <!-- AREA RISERVATA TECNICO (VISIBILE SOLO CON SUPER PASSWORD) -->
+  <div class="card card-full" id="superAdminCard" style="display:none;border-color:rgba(245,158,11,0.45);">
+    <h2>
+      <span>🛠️ Area Tecnico &amp; Sicurezza Super Password</span>
+      <span class="badge badge-warn">SOLO SUPERADMIN</span>
+    </h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;align-items:start;">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Super Password Tecnico Attuale</label>
+          <input type="password" id="curSuperPwd" maxlength="63" placeholder="Password tecnico attuale...">
+        </div>
+        <div class="form-group">
+          <label>Nuova Super Password Tecnico (min 8 caratteri)</label>
+          <input type="password" id="newSuperPwd" maxlength="63" placeholder="Nuova super password (min 8 caratteri)...">
+        </div>
+        <div class="form-group">
+          <label>Conferma Nuova Super Password</label>
+          <input type="password" id="cfmSuperPwd" maxlength="63" placeholder="Ripeti nuova super password...">
+        </div>
+        <button class="btn btn-gold" onclick="saveSuperPassword()">🔑 Aggiorna Super Password NVS</button>
+      </div>
+
+      <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.42);border-radius:12px;padding:16px;">
+        <div style="font-weight:700;color:#fca5a5;margin-bottom:6px;">🗑️ Reset Totale Dispositivo (Configurazione + Super Password)</div>
+        <div style="font-size:0.82rem;color:var(--muted);line-height:1.45;margin-bottom:12px;">
+          Il normale Ripristino di Fabbrica della scuola <strong>mantiene intatta</strong> la Super Password in NVS. Usa questa funzione solo prima di dismettere o cedere la scheda per cancellare anche la Super Password e riattivare il wizard iniziale.
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label>Conferma con Super Password Tecnico</label>
+          <input type="password" id="fullResetSuperPwd" maxlength="63" placeholder="Inserisci Super Password...">
+        </div>
+        <button class="btn btn-danger" style="width:100%;justify-content:center;padding:12px;" id="btnFactoryResetFull" onclick="factoryResetFullDevice()">
+          🗑️ RESET TOTALE (CONFIG + SUPER PASSWORD)
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="modal-overlay" id="wifiModal" onclick="if(event.target===this)closeWifiModal()">
@@ -481,13 +527,23 @@ async function fetchStatus() {
     document.getElementById('netInfo').textContent = d.net_mode;
     document.getElementById('ipAddr').textContent = d.ip + ' (chronoring.local)';
     document.getElementById('chkSuspended').checked = d.suspended;
+    applyRoleUi(d.role);
   } catch (e) {}
+}
+
+function applyRoleUi(role) {
+  const isSup = (role === 'superadmin');
+  const sb = document.getElementById('superBadge');
+  const sc = document.getElementById('superAdminCard');
+  if (sb) sb.style.display = isSup ? 'inline-block' : 'none';
+  if (sc) sc.style.display = isSup ? 'block' : 'none';
 }
 
 async function loadConfig() {
   const r = await fetch('/api/config');
   if (r.status === 401) { window.location.href = '/login'; return; }
   const d = await r.json();
+  applyRoleUi(d.role);
   document.getElementById('chkSuspended').checked = d.suspended;
   document.getElementById('pulseMs').value = d.relay_pulse_ms;
   document.getElementById('wifiSsid').value = d.wifi_ssid || '';
@@ -800,15 +856,23 @@ async function savePulse() {
 
 async function savePassword() {
   const pwd = document.getElementById('newWebPwd').value.trim();
-  if (pwd.length < 3) { showToast('Password troppo corta (min 3 caratteri)', true); return; }
+  if (pwd.length < 3 || pwd.length > 31) { showToast('La password deve essere tra 3 e 31 caratteri', true); return; }
   const r = await fetch('/api/password', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({password: pwd})
   });
+  const d = await r.json().catch(() => ({}));
   if (r.ok) {
-    showToast('Password aggiornata! Effettua nuovamente il login.');
-    setTimeout(() => window.location.href = '/login', 1500);
+    document.getElementById('newWebPwd').value = '';
+    if (d.keep_session) {
+      showToast(d.message || '✅ Password gestori aggiornata (sessione tecnico attiva)!');
+    } else {
+      showToast(d.message || 'Password aggiornata! Effettua nuovamente il login.');
+      setTimeout(() => window.location.href = '/login', 1500);
+    }
+  } else {
+    showToast(d.message || 'Errore salvataggio password', true);
   }
 }
 
@@ -1021,9 +1085,166 @@ async function factoryResetDevice() {
   }
 }
 
+async function saveSuperPassword() {
+  const cur = document.getElementById('curSuperPwd').value;
+  const nw = document.getElementById('newSuperPwd').value;
+  const cfm = document.getElementById('cfmSuperPwd').value;
+  if (!cur) { showToast('Inserisci la Super Password attuale.', true); return; }
+  if (nw.length < 8 || nw.length > 63) { showToast('La nuova Super Password deve avere tra 8 e 63 caratteri.', true); return; }
+  if (nw !== cfm) { showToast('Le due nuove Super Password non coincidono.', true); return; }
+  try {
+    const r = await fetch('/api/super-password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        current_super_password: cur,
+        new_super_password: nw,
+        confirm_super_password: cfm
+      })
+    });
+    const d = await r.json().catch(() => ({}));
+    showToast(d.message || (r.ok ? 'Super Password aggiornata!' : 'Errore aggiornamento Super Password'), !r.ok);
+    if (r.ok) {
+      setTimeout(() => { window.location.href = '/login'; }, 1600);
+    }
+  } catch (e) {
+    showToast('Errore di comunicazione con il dispositivo.', true);
+  }
+}
+
+async function factoryResetFullDevice() {
+  const sp = document.getElementById('fullResetSuperPwd').value;
+  if (!sp) { showToast('Inserisci la Super Password Tecnico per confermare il Reset Totale.', true); return; }
+  if (!confirm('ATTENZIONE MASSIMA: Questo cancellerà TUTTO, inclusa la Super Password Tecnico dalla NVS!')) return;
+  if (!confirm('Conferma finale: ripristinare completamente la scheda allo stato vergine e riavviarla?')) return;
+  const btn = document.getElementById('btnFactoryResetFull');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/factory-reset-full', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({current_super_password: sp})
+    });
+    const d = await r.json().catch(() => ({}));
+    showToast(d.message || 'Operazione completata', !r.ok);
+    if (r.ok) {
+      setTimeout(() => { window.location.href = '/login'; }, 6000);
+    } else {
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.disabled = false;
+    showToast('Errore di rete durante il Reset Totale.', true);
+  }
+}
+
 loadConfig();
 fetchStatus();
 setInterval(fetchStatus, 1000);
+</script>
+</body>
+</html>
+)rawliteral";
+
+static const char SETUP_SUPER_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChronoRing - Configurazione Iniziale Tecnico</title>
+<style>
+  :root{--bg:#060d1f;--card:#0d1b36;--cyan:#00d4ff;--gold:#f59e0b;--text:#e2e8f0;--muted:#94a3b8;--danger:#ef4444;}
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',system-ui,sans-serif;}
+  body{background:radial-gradient(circle at center,#0f2447 0%,#050b18 100%);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .setup-card{background:var(--card);border:1px solid rgba(245,158,11,0.4);border-radius:18px;padding:30px 26px;width:100%;max-width:460px;box-shadow:0 0 38px rgba(0,212,255,0.14);}
+  h1{font-size:1.35rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--gold);margin-bottom:8px;text-align:center;}
+  p.sub{color:var(--muted);font-size:0.86rem;line-height:1.45;margin-bottom:20px;text-align:center;}
+  .note{background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.28);border-radius:10px;padding:11px 13px;font-size:0.8rem;color:#bae6fd;line-height:1.45;margin-bottom:18px;}
+  .input-group{margin-bottom:15px;}
+  label{display:block;font-size:0.8rem;color:var(--cyan);margin-bottom:6px;font-weight:600;}
+  input{width:100%;padding:11px 13px;border-radius:10px;border:1px solid rgba(0,212,255,0.3);background:#071022;color:#fff;font-size:0.96rem;outline:none;}
+  input:focus{border-color:var(--cyan);box-shadow:0 0 10px rgba(0,212,255,0.25);}
+  button{width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(135deg,#d97706,#fbbf24);color:#1e1103;font-weight:800;font-size:0.96rem;cursor:pointer;margin-top:6px;}
+  button:hover{filter:brightness(1.08);}
+  .err{color:#f87171;font-size:0.85rem;margin-top:12px;min-height:20px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="setup-card">
+  <h1>🛡️ Configurazione Iniziale Tecnico</h1>
+  <p class="sub">Prima configurazione di sicurezza (<strong>ChronoRing v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</strong>)</p>
+  <div class="note">
+    Imposta la tua <strong>Super Password personale da Tecnico</strong> per garantire il recupero di emergenza qualora la scuola dimentichi la password.<br>
+    • Salvata in area isolata <strong>NVS (SHA-256 + Salt)</strong>.<br>
+    • Non viene inclusa nei backup e sopravvive al Factory Reset della scuola.<br>
+    • Dopo il salvataggio questa schermata si <strong>autoblocca per sempre</strong>.
+  </div>
+  <form id="superSetupForm">
+    <div class="input-group">
+      <label for="superPwd">SUPER PASSWORD TECNICO (min 8 caratteri) *</label>
+      <input type="password" id="superPwd" minlength="8" maxlength="63" placeholder="Inserisci la tua Super Password..." required autofocus>
+    </div>
+    <div class="input-group">
+      <label for="superPwdConfirm">CONFERMA SUPER PASSWORD TECNICO *</label>
+      <input type="password" id="superPwdConfirm" minlength="8" maxlength="63" placeholder="Ripeti Super Password..." required>
+    </div>
+    <div class="input-group">
+      <label for="schoolPwd">PASSWORD GESTORI SCUOLA (opzionale, min 4 caratteri)</label>
+      <input type="password" id="schoolPwd" maxlength="31" placeholder="Lascia vuoto per mantenere l'attuale (consigliato cambiarla)">
+    </div>
+    <button type="submit" id="btnSaveSetup">🔒 SALVA E ATTIVA MODALITÀ TECNICO</button>
+    <div class="err" id="errMsg"></div>
+  </form>
+</div>
+<script>
+document.getElementById('superSetupForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('errMsg');
+  err.textContent = '';
+  const superPwd = document.getElementById('superPwd').value;
+  const confirmPwd = document.getElementById('superPwdConfirm').value;
+  const schoolPwd = document.getElementById('schoolPwd').value;
+  if (superPwd.length < 8 || superPwd.length > 63) {
+    err.textContent = 'La Super Password deve avere tra 8 e 63 caratteri.';
+    return;
+  }
+  if (superPwd !== confirmPwd) {
+    err.textContent = 'Le due Super Password non coincidono.';
+    return;
+  }
+  if (schoolPwd.length > 0 && (schoolPwd.length < 4 || schoolPwd.length > 31)) {
+    err.textContent = 'La Password Scuola deve avere tra 4 e 31 caratteri (oppure resta vuota).';
+    return;
+  }
+  if (schoolPwd.length > 0 && schoolPwd === superPwd) {
+    err.textContent = 'La Password Scuola deve essere diversa dalla Super Password.';
+    return;
+  }
+  const btn = document.getElementById('btnSaveSetup');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/super-setup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        super_password: superPwd,
+        super_password_confirm: confirmPwd,
+        school_password: schoolPwd
+      })
+    });
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) {
+      window.location.href = '/';
+    } else {
+      err.textContent = d.message || 'Errore durante la configurazione.';
+      btn.disabled = false;
+    }
+  } catch (ex) {
+    err.textContent = 'Errore di comunicazione con il dispositivo.';
+    btn.disabled = false;
+  }
+});
 </script>
 </body>
 </html>
@@ -1128,13 +1349,24 @@ void WebServerHandler::generateNewSessionToken() {
              (unsigned long)esp_random(), (unsigned long)millis());
 }
 
-bool WebServerHandler::isAuthenticated(AsyncWebServerRequest* request) {
+WebServerHandler::AuthRole WebServerHandler::getAuthRole(AsyncWebServerRequest* request) {
+    if (!request || _sessionRole == AuthRole::NONE || strlen(_sessionToken) == 0) {
+        return AuthRole::NONE;
+    }
     if (!request->hasHeader("Cookie")) {
-        return false;
+        return AuthRole::NONE;
     }
     String cookie = request->header("Cookie");
     String expected = String("CHRONORING_SESSION=") + _sessionToken;
-    return (cookie.indexOf(expected) != -1);
+    return (cookie.indexOf(expected) != -1) ? _sessionRole : AuthRole::NONE;
+}
+
+bool WebServerHandler::isAuthenticated(AsyncWebServerRequest* request) {
+    return getAuthRole(request) != AuthRole::NONE;
+}
+
+bool WebServerHandler::isSuperAdmin(AsyncWebServerRequest* request) {
+    return getAuthRole(request) == AuthRole::SUPERADMIN;
 }
 
 void WebServerHandler::scheduleRestart(uint32_t delayMs) {
@@ -1153,6 +1385,7 @@ void WebServerHandler::scheduleRestart(uint32_t delayMs) {
 
 void WebServerHandler::begin() {
     generateNewSessionToken();
+    _sessionRole = AuthRole::NONE;
 
     setupRoutes();
     _server.begin();
@@ -1163,7 +1396,7 @@ void WebServerHandler::setupRoutes() {
     // 1. PAGINA DI LOGIN
     _server.on("/login", HTTP_GET, [](AsyncWebServerRequest* request) {
         if (isAuthenticated(request)) {
-            request->redirect("/");
+            request->redirect(ConfigManager::isSuperPasswordConfigured() ? "/" : "/setup-super");
             return;
         }
         request->send(200, "text/html; charset=utf-8", LOGIN_HTML);
@@ -1172,43 +1405,178 @@ void WebServerHandler::setupRoutes() {
     // 2. LOGOUT
     _server.on("/logout", HTTP_GET, [](AsyncWebServerRequest* request) {
         generateNewSessionToken();
+        _sessionRole = AuthRole::NONE;
         AsyncWebServerResponse* response = request->beginResponse(302, "text/plain", "Redirecting...");
         response->addHeader("Location", "/login");
         response->addHeader("Set-Cookie", "CHRONORING_SESSION=; Path=/; Max-Age=0");
         request->send(response);
     });
 
-    // 3. DASHBOARD PRINCIPALE (Protetta)
+    // 3. DASHBOARD PRINCIPALE (Protetta + controllo Wizard iniziale una tantum)
     _server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
         if (!isAuthenticated(request)) {
             request->redirect("/login");
             return;
         }
+        if (!ConfigManager::isSuperPasswordConfigured()) {
+            request->redirect("/setup-super");
+            return;
+        }
         request->send(200, "text/html; charset=utf-8", DASHBOARD_HTML);
     });
 
-    // 4. API LOGIN (POST JSON)
+    // 3b. WIZARD UNA TANTUM CONFIGURAZIONE SUPER PASSWORD TECNICO (/setup-super)
+    _server.on("/setup-super", HTTP_GET, [](AsyncWebServerRequest* request) {
+        if (!isAuthenticated(request)) {
+            request->redirect("/login");
+            return;
+        }
+        if (ConfigManager::isSuperPasswordConfigured()) {
+            request->redirect("/");
+            return;
+        }
+        request->send(200, "text/html; charset=utf-8", SETUP_SUPER_HTML);
+    });
+
+    // 4. API LOGIN A DOPPIO RUOLO CON ANTI BRUTE-FORCE (POST JSON)
     _server.on("/api/login", HTTP_POST,
         [](AsyncWebServerRequest* request) {},
         nullptr,
         [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            uint32_t now = millis();
+            if (_loginLockUntilMs != 0 && static_cast<int32_t>(_loginLockUntilMs - now) > 0) {
+                uint32_t remSec = (_loginLockUntilMs - now + 999UL) / 1000UL;
+                char msg[112];
+                snprintf(msg, sizeof(msg),
+                         "{\"error\":\"Troppi tentativi falliti. Riprova tra %lu secondi.\"}",
+                         (unsigned long)remSec);
+                request->send(429, "application/json", msg);
+                return;
+            }
+            if (index != 0 || len != total || total > 1024) {
+                request->send(400, "application/json", "{\"error\":\"Payload non valido\"}");
+                return;
+            }
+
             JsonDocument doc;
             if (deserializeJson(doc, data, len)) {
                 request->send(400, "application/json", "{\"error\":\"JSON non valido\"}");
                 return;
             }
             const char* pwd = doc["password"] | "";
-            if (ConfigManager::checkWebPassword(pwd)) {
+
+            AuthRole matchedRole = AuthRole::NONE;
+            if (ConfigManager::checkSuperPassword(pwd)) {
+                matchedRole = AuthRole::SUPERADMIN;
+            } else if (ConfigManager::checkWebPassword(pwd)) {
+                matchedRole = AuthRole::ADMIN;
+            }
+
+            if (matchedRole != AuthRole::NONE) {
+                _failedLoginAttempts = 0;
+                _loginLockUntilMs = 0;
                 generateNewSessionToken();
-                AsyncWebServerResponse* response = request->beginResponse(200, "application/json", "{\"status\":\"ok\"}");
-                String cookieHeader = String("CHRONORING_SESSION=") + _sessionToken + "; Path=/; HttpOnly";
+                _sessionRole = matchedRole;
+
+                bool needsSetup = !ConfigManager::isSuperPasswordConfigured();
+                JsonDocument resDoc;
+                resDoc["status"] = "ok";
+                resDoc["role"] = (matchedRole == AuthRole::SUPERADMIN) ? "superadmin" : "admin";
+                resDoc["needs_super_setup"] = needsSetup;
+
+                String out;
+                serializeJson(resDoc, out);
+                AsyncWebServerResponse* response = request->beginResponse(200, "application/json", out);
+                String cookieHeader = String("CHRONORING_SESSION=") + _sessionToken + "; Path=/; HttpOnly; SameSite=Lax";
                 response->addHeader("Set-Cookie", cookieHeader);
                 request->send(response);
-                Serial.println("[WEB] Login amministratore effettuato con successo.");
+                Serial.printf("[WEB] Login effettuato con ruolo: %s.\n",
+                              (matchedRole == AuthRole::SUPERADMIN) ? "SUPERADMIN (Tecnico)" : "ADMIN (Scuola)");
             } else {
-                Serial.println("[WEB] Tentativo di login fallito (password errata).");
-                request->send(401, "application/json", "{\"error\":\"Password errata\"}");
+                if (_failedLoginAttempts < 255) {
+                    _failedLoginAttempts++;
+                }
+                if (_failedLoginAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+                    _loginLockUntilMs = now + LOGIN_LOCKOUT_MS;
+                    _failedLoginAttempts = 0;
+                    Serial.printf("[WEB] Anti brute-force: login bloccato per %u s dopo %u tentativi errati.\n",
+                                  (unsigned)(LOGIN_LOCKOUT_MS / 1000), MAX_FAILED_LOGIN_ATTEMPTS);
+                    request->send(429, "application/json",
+                                  "{\"error\":\"Troppi tentativi falliti. Accesso bloccato per 60 secondi.\"}");
+                } else {
+                    Serial.printf("[WEB] Tentativo di login fallito (%u/%u).\n",
+                                  _failedLoginAttempts, MAX_FAILED_LOGIN_ATTEMPTS);
+                    request->send(401, "application/json", "{\"error\":\"Password errata\"}");
+                }
             }
+        }
+    );
+
+    // 4b. API PROVISIONING UNA TANTUM SUPER PASSWORD TECNICO (POST /api/super-setup)
+    _server.on("/api/super-setup", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isAuthenticated(request)) {
+                request->send(401, "application/json", "{\"message\":\"Non autorizzato\"}");
+                return;
+            }
+            if (ConfigManager::isSuperPasswordConfigured()) {
+                request->send(403, "application/json",
+                              "{\"message\":\"Super Password già configurata: wizard bloccato permanentemente.\"}");
+                return;
+            }
+            if (index != 0 || len != total || total > 1024) {
+                request->send(400, "application/json", "{\"message\":\"Payload non valido\"}");
+                return;
+            }
+
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+
+            const char* superPwd = doc["super_password"] | "";
+            const char* cfmPwd   = doc["super_password_confirm"] | "";
+            const char* schoolPwd = doc["school_password"] | "";
+
+            size_t spLen = strlen(superPwd);
+            if (spLen < ConfigManager::SUPER_PWD_MIN_LEN || spLen > ConfigManager::SUPER_PWD_MAX_LEN) {
+                request->send(400, "application/json",
+                              "{\"message\":\"La Super Password deve contenere tra 8 e 63 caratteri.\"}");
+                return;
+            }
+            if (strcmp(superPwd, cfmPwd) != 0) {
+                request->send(400, "application/json", "{\"message\":\"Le due Super Password non coincidono.\"}");
+                return;
+            }
+
+            size_t schLen = strlen(schoolPwd);
+            if (schLen > 0) {
+                if (schLen < 4 || schLen > 31) {
+                    request->send(400, "application/json",
+                                  "{\"message\":\"La password scuola deve contenere tra 4 e 31 caratteri.\"}");
+                    return;
+                }
+                if (strcmp(schoolPwd, superPwd) == 0) {
+                    request->send(400, "application/json",
+                                  "{\"message\":\"La password scuola deve essere diversa dalla Super Password.\"}");
+                    return;
+                }
+            }
+
+            if (!ConfigManager::setSuperPassword(superPwd)) {
+                request->send(500, "application/json", "{\"message\":\"Errore salvataggio Super Password in NVS.\"}");
+                return;
+            }
+            if (schLen > 0 && !ConfigManager::setWebPassword(schoolPwd)) {
+                request->send(500, "application/json", "{\"message\":\"Super Password salvata, ma errore aggiornamento password scuola.\"}");
+                return;
+            }
+
+            _sessionRole = AuthRole::SUPERADMIN;
+            request->send(200, "application/json", "{\"message\":\"✅ Configurazione Tecnico completata!\"}");
         }
     );
 
@@ -1219,6 +1587,7 @@ void WebServerHandler::setupRoutes() {
             return;
         }
         JsonDocument doc;
+        doc["role"] = isSuperAdmin(request) ? "superadmin" : "admin";
         doc["time"] = NetworkManager::getFormattedTime();
         doc["date"] = NetworkManager::getFormattedDate();
         doc["ntp_synced"] = NetworkManager::isTimeSynced();
@@ -1246,6 +1615,7 @@ void WebServerHandler::setupRoutes() {
         }
         SystemConfig cfg = ConfigManager::getConfig();
         JsonDocument doc;
+        doc["role"] = isSuperAdmin(request) ? "superadmin" : "admin";
         doc["wifi_ssid"] = cfg.wifiSsid;
         doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : ConfigManager::DEFAULT_AP_SSID;
         doc["ap_has_password"] = (strlen(cfg.apPassword) >= 8);
@@ -1478,7 +1848,7 @@ void WebServerHandler::setupRoutes() {
         }
     );
 
-    // 13. API MODIFICA PASSWORD WEB (POST /api/password)
+    // 13. API MODIFICA PASSWORD WEB SCUOLA (POST /api/password)
     _server.on("/api/password", HTTP_POST,
         [](AsyncWebServerRequest* request) {},
         nullptr,
@@ -1487,21 +1857,81 @@ void WebServerHandler::setupRoutes() {
                 request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
                 return;
             }
+            if (index != 0 || len != total || total > 1024) {
+                request->send(400, "application/json", "{\"message\":\"Payload non valido\"}");
+                return;
+            }
             JsonDocument doc;
             if (deserializeJson(doc, data, len)) {
                 request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
                 return;
             }
             const char* newPwd = doc["password"] | "";
-            if (strlen(newPwd) < 3) {
-                request->send(400, "application/json", "{\"message\":\"Password troppo corta\"}");
+            size_t pwdLen = strlen(newPwd);
+            if (pwdLen < 3 || pwdLen > 31) {
+                request->send(400, "application/json", "{\"message\":\"La password deve essere tra 3 e 31 caratteri\"}");
                 return;
             }
             if (ConfigManager::setWebPassword(newPwd)) {
-                generateNewSessionToken();
-                request->send(200, "application/json", "{\"message\":\"Password aggiornata\"}");
+                if (isSuperAdmin(request)) {
+                    // Il tecnico mantiene la sessione attiva dopo aver reimpostato la password della scuola
+                    request->send(200, "application/json",
+                                  "{\"message\":\"✅ Password scuola aggiornata! Sessione tecnico mantenuta.\",\"keep_session\":true}");
+                } else {
+                    generateNewSessionToken();
+                    _sessionRole = AuthRole::NONE;
+                    request->send(200, "application/json",
+                                  "{\"message\":\"Password aggiornata\",\"keep_session\":false}");
+                }
             } else {
                 request->send(500, "application/json", "{\"message\":\"Errore salvataggio password\"}");
+            }
+        }
+    );
+
+    // 13b. API CAMBIO SUPER PASSWORD TECNICO IN NVS (POST /api/super-password - SOLO SUPERADMIN)
+    _server.on("/api/super-password", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isSuperAdmin(request)) {
+                request->send(403, "application/json", "{\"message\":\"Accesso riservato alla modalità Tecnico.\"}");
+                return;
+            }
+            if (index != 0 || len != total || total > 1024) {
+                request->send(400, "application/json", "{\"message\":\"Payload non valido\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            const char* curPwd = doc["current_super_password"] | "";
+            const char* newPwd = doc["new_super_password"] | "";
+            const char* cfmPwd = doc["confirm_super_password"] | "";
+
+            if (!ConfigManager::checkSuperPassword(curPwd)) {
+                request->send(403, "application/json", "{\"message\":\"Super Password attuale errata.\"}");
+                return;
+            }
+            size_t newLen = strlen(newPwd);
+            if (newLen < ConfigManager::SUPER_PWD_MIN_LEN || newLen > ConfigManager::SUPER_PWD_MAX_LEN) {
+                request->send(400, "application/json",
+                              "{\"message\":\"La nuova Super Password deve contenere tra 8 e 63 caratteri.\"}");
+                return;
+            }
+            if (strcmp(newPwd, cfmPwd) != 0) {
+                request->send(400, "application/json", "{\"message\":\"Le due nuove Super Password non coincidono.\"}");
+                return;
+            }
+            if (ConfigManager::setSuperPassword(newPwd)) {
+                generateNewSessionToken();
+                _sessionRole = AuthRole::NONE;
+                request->send(200, "application/json",
+                              "{\"message\":\"✅ Super Password NVS aggiornata! Effettua nuovamente il login.\"}");
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore salvataggio Super Password in NVS.\"}");
             }
         }
     );
@@ -1583,7 +2013,7 @@ void WebServerHandler::setupRoutes() {
         }
     );
 
-    // 17. API RIPRISTINO IMPOSTAZIONI DI FABBRICA (POST /api/factory-reset)
+    // 17. API RIPRISTINO IMPOSTAZIONI DI FABBRICA SCUOLA (MANTIENE SUPER PASSWORD IN NVS)
     _server.on("/api/factory-reset", HTTP_POST, [](AsyncWebServerRequest* request) {
         if (!isAuthenticated(request)) {
             request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
@@ -1591,6 +2021,8 @@ void WebServerHandler::setupRoutes() {
         }
         RelayController::forceOff();
         if (ConfigManager::resetToFactoryDefaults()) {
+            generateNewSessionToken();
+            _sessionRole = AuthRole::NONE;
             AsyncWebServerResponse* response = request->beginResponse(
                 200, "application/json",
                 "{\"message\":\"🔄 Ripristino di fabbrica completato! Riavvio in corso...\"}"
@@ -1603,6 +2035,49 @@ void WebServerHandler::setupRoutes() {
             request->send(500, "application/json", "{\"message\":\"Errore durante il ripristino di fabbrica.\"}");
         }
     });
+
+    // 17b. API RESET TOTALE TECNICO (CANCELLA CONFIGURAZIONE + SUPER PASSWORD IN NVS - SOLO SUPERADMIN)
+    _server.on("/api/factory-reset-full", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isSuperAdmin(request)) {
+                request->send(403, "application/json", "{\"message\":\"Accesso riservato alla modalità Tecnico.\"}");
+                return;
+            }
+            if (index != 0 || len != total || total > 1024) {
+                request->send(400, "application/json", "{\"message\":\"Payload non valido\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            const char* curPwd = doc["current_super_password"] | "";
+            if (!ConfigManager::checkSuperPassword(curPwd)) {
+                request->send(403, "application/json", "{\"message\":\"Super Password Tecnico errata.\"}");
+                return;
+            }
+
+            RelayController::forceOff();
+            ConfigManager::clearSuperPassword();
+            if (ConfigManager::resetToFactoryDefaults()) {
+                generateNewSessionToken();
+                _sessionRole = AuthRole::NONE;
+                AsyncWebServerResponse* response = request->beginResponse(
+                    200, "application/json",
+                    "{\"message\":\"🗑️ Reset totale completato (config + Super Password)! Riavvio in corso...\"}"
+                );
+                response->addHeader("Connection", "close");
+                request->send(response);
+                Serial.println("[WEB] Reset totale (config + Super Password NVS) eseguito da SUPERADMIN. Riavvio tra 1.5s...");
+                scheduleRestart(1500);
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore durante il reset totale.\"}");
+            }
+        }
+    );
 
     // 18. API IMPOSTAZIONI TIMEOUT E SPEGNIMENTO DISPLAY (POST /api/display-settings)
     _server.on("/api/display-settings", HTTP_POST,

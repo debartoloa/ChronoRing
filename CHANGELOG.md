@@ -5,6 +5,16 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-22
+
+### Added
+- **Super Password Tecnico / Manutentore (`ConfigManager`, `WebServerHandler`, `main.cpp`)**:
+  - Salvataggio isolato nella partizione **NVS** (`cr_sec`) tramite **salt casuale da 16 byte** (`esp_fill_random`) e **SHA-256 iterato (`1000` round)** con confronto a tempo costante (`mbedtls`). Non viene mai esposta in `chronoring-backup.json`, non è hardcoded nel firmware e sopravvive al normale *Ripristino di Fabbrica* della scuola.
+  - **Wizard Una Tantum (`/setup-super`, `POST /api/super-setup`)**: dopo il primo login (su scheda vergine o appena aggiornata), guida il tecnico all'impostazione obbligatoria della Super Password (`8..63` caratteri) e opzionalmente della password gestori scuola, autobloccandosi poi in modo permanente.
+  - **Login trasparente a doppio ruolo (`ADMIN` / `SUPERADMIN`)** con protezione **Anti Brute-Force** (`5` tentativi falliti → blocco per `60` secondi con HTTP `429`).
+  - **Area Riservata Tecnico** in Dashboard (visibile esclusivamente in sessione `SUPERADMIN` con badge `🛠️ MODALITÀ TECNICO`): consente di reimpostare la password dimenticata dalla scuola senza perdere la sessione, ruotare la Super Password (`POST /api/super-password`) o eseguire il **Reset Totale** inclusa la NVS (`POST /api/factory-reset-full`).
+  - **Recupero fisico USB-C** tramite doppio invio seriale di `'R'` maiuscolo entro 5 secondi e inclusione della firma binaria `FW_VERSION_SIGNATURE` nel `.bin`.
+
 ## [1.3.2] - 2026-11-22
 
 ### Fixed

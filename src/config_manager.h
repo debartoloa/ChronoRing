@@ -50,6 +50,10 @@ public:
     static constexpr uint32_t MAX_DISPLAY_TIMEOUT_SEC     = 3600;
     static constexpr uint16_t DEFAULT_AP_TIMEOUT_MIN      = 15;
     static constexpr uint16_t MAX_AP_TIMEOUT_MIN          = 120;
+    static constexpr const char* NVS_SEC_NAMESPACE        = "cr_sec";
+    static constexpr size_t SUPER_PWD_MIN_LEN             = 8;
+    static constexpr size_t SUPER_PWD_MAX_LEN             = 63;
+    static constexpr uint16_t SUPER_PWD_HASH_ROUNDS       = 1000;
 
     static bool begin();
     static SystemConfig getConfig();
@@ -63,6 +67,11 @@ public:
 
     static bool checkWebPassword(const char* candidate);
     static bool setWebPassword(const char* newPassword);
+
+    static bool isSuperPasswordConfigured();
+    static bool checkSuperPassword(const char* candidate);
+    static bool setSuperPassword(const char* newSuperPassword);
+    static bool clearSuperPassword();
 
     static bool setWiFiCredentials(const char* ssid, const char* password);
     static bool setApCredentials(const char* apSsid, const char* apPassword);
@@ -90,8 +99,12 @@ private:
     static SystemConfig _config;
     static SemaphoreHandle_t _mutex;
     static bool _initialized;
+    static bool _superPwdConfigured;
+    static uint8_t _superSalt[16];
+    static uint8_t _superHash[32];
 
     static void loadDefaults(SystemConfig& cfg);
+    static void loadSuperPasswordFromNvsInternal();
     static bool loadFromFileInternal();
     static bool saveToFileInternal(const SystemConfig& cfg);
     static uint32_t clampRelayPulse(uint32_t pulseMs);

@@ -2,10 +2,17 @@
 #include "hardware_pins.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <mbedtls/sha256.h>
+#include <esp_system.h>
+#include <esp_random.h>
 
 SystemConfig ConfigManager::_config;
 SemaphoreHandle_t ConfigManager::_mutex = nullptr;
 bool ConfigManager::_initialized = false;
+bool ConfigManager::_superPwdConfigured = false;
+uint8_t ConfigManager::_superSalt[16] = {0};
+uint8_t ConfigManager::_superHash[32] = {0};
 
 constexpr const char* ConfigManager::CONFIG_FILE_PATH;
 constexpr const char* ConfigManager::SCHOOL_LOGO_PATH;
@@ -21,6 +28,49 @@ constexpr uint32_t ConfigManager::MIN_DISPLAY_TIMEOUT_SEC;
 constexpr uint32_t ConfigManager::MAX_DISPLAY_TIMEOUT_SEC;
 constexpr uint16_t ConfigManager::DEFAULT_AP_TIMEOUT_MIN;
 constexpr uint16_t ConfigManager::MAX_AP_TIMEOUT_MIN;
+constexpr const char* ConfigManager::NVS_SEC_NAMESPACE;
+constexpr size_t ConfigManager::SUPER_PWD_MIN_LEN;
+constexpr size_t ConfigManager::SUPER_PWD_MAX_LEN;
+constexpr uint16_t ConfigManager::SUPER_PWD_HASH_ROUNDS;
+
+static bool computeSaltedSha256(const uint8_t salt[16], const char* password, uint8_t outHash[32]) {
+    if (!salt || !password || !outHash) return false;
+    size_t pwdLen = strlen(password);
+
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+
+    uint8_t digest[32] = {0};
+    for (uint16_t round = 0; round < ConfigManager::SUPER_PWD_HASH_ROUNDS; ++round) {
+        if (mbedtls_sha256_starts_ret(&ctx, 0) != 0) {
+            mbedtls_sha256_free(&ctx);
+            return false;
+        }
+        if (round > 0 && mbedtls_sha256_update_ret(&ctx, digest, sizeof(digest)) != 0) {
+            mbedtls_sha256_free(&ctx);
+            return false;
+        }
+        if (mbedtls_sha256_update_ret(&ctx, salt, 16) != 0 ||
+            mbedtls_sha256_update_ret(&ctx, reinterpret_cast<const unsigned char*>(password), pwdLen) != 0 ||
+            mbedtls_sha256_finish_ret(&ctx, digest) != 0) {
+            mbedtls_sha256_free(&ctx);
+            return false;
+        }
+    }
+
+    memcpy(outHash, digest, 32);
+    memset(digest, 0, sizeof(digest));
+    mbedtls_sha256_free(&ctx);
+    return true;
+}
+
+static bool constantTimeEquals(const uint8_t* a, const uint8_t* b, size_t len) {
+    uint8_t diff = 0;
+    for (size_t i = 0; i < len; ++i) {
+        diff |= static_cast<uint8_t>(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
 
 uint32_t ConfigManager::clampRelayPulse(uint32_t pulseMs) {
     if (pulseMs < MIN_RELAY_PULSE_MS) return MIN_RELAY_PULSE_MS;
@@ -92,6 +142,9 @@ bool ConfigManager::begin() {
     }
 
     xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    // Carica sempre l'hash della Super Password Tecnico dalla partizione NVS separata
+    loadSuperPasswordFromNvsInternal();
 
     if (!LittleFS.begin(true)) {
         Serial.println("[CONFIG] ERRORE CRITICO: Montaggio LittleFS fallito!");
@@ -341,6 +394,133 @@ bool ConfigManager::setWebPassword(const char* newPassword) {
         ok = saveToFileInternal(_config);
         xSemaphoreGive(_mutex);
     }
+    return ok;
+}
+
+void ConfigManager::loadSuperPasswordFromNvsInternal() {
+    _superPwdConfigured = false;
+    memset(_superSalt, 0, sizeof(_superSalt));
+    memset(_superHash, 0, sizeof(_superHash));
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_SEC_NAMESPACE, true)) {
+        return;
+    }
+
+    size_t saltLen = prefs.getBytesLength("sp_salt");
+    size_t hashLen = prefs.getBytesLength("sp_hash");
+    if (saltLen == sizeof(_superSalt) && hashLen == sizeof(_superHash)) {
+        size_t r1 = prefs.getBytes("sp_salt", _superSalt, sizeof(_superSalt));
+        size_t r2 = prefs.getBytes("sp_hash", _superHash, sizeof(_superHash));
+        if (r1 == sizeof(_superSalt) && r2 == sizeof(_superHash)) {
+            _superPwdConfigured = true;
+        }
+    }
+    prefs.end();
+
+    if (!_superPwdConfigured) {
+        memset(_superSalt, 0, sizeof(_superSalt));
+        memset(_superHash, 0, sizeof(_superHash));
+    }
+}
+
+bool ConfigManager::isSuperPasswordConfigured() {
+    bool configured = false;
+    if (_mutex && xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        configured = _superPwdConfigured;
+        xSemaphoreGive(_mutex);
+    } else {
+        configured = _superPwdConfigured;
+    }
+    return configured;
+}
+
+bool ConfigManager::checkSuperPassword(const char* candidate) {
+    if (!candidate || strlen(candidate) == 0 || !_mutex) return false;
+
+    uint8_t localSalt[16];
+    uint8_t localHash[32];
+    bool configured = false;
+
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        configured = _superPwdConfigured;
+        if (configured) {
+            memcpy(localSalt, _superSalt, sizeof(localSalt));
+            memcpy(localHash, _superHash, sizeof(localHash));
+        }
+        xSemaphoreGive(_mutex);
+    }
+
+    if (!configured) {
+        return false;
+    }
+
+    uint8_t computed[32] = {0};
+    bool ok = computeSaltedSha256(localSalt, candidate, computed) &&
+              constantTimeEquals(computed, localHash, sizeof(localHash));
+
+    memset(localSalt, 0, sizeof(localSalt));
+    memset(localHash, 0, sizeof(localHash));
+    memset(computed, 0, sizeof(computed));
+    return ok;
+}
+
+bool ConfigManager::setSuperPassword(const char* newSuperPassword) {
+    if (!newSuperPassword || !_mutex) return false;
+    size_t len = strlen(newSuperPassword);
+    if (len < SUPER_PWD_MIN_LEN || len > SUPER_PWD_MAX_LEN) {
+        return false;
+    }
+
+    uint8_t newSalt[16] = {0};
+    uint8_t newHash[32] = {0};
+    esp_fill_random(newSalt, sizeof(newSalt));
+    if (!computeSaltedSha256(newSalt, newSuperPassword, newHash)) {
+        memset(newSalt, 0, sizeof(newSalt));
+        return false;
+    }
+
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        Preferences prefs;
+        if (prefs.begin(NVS_SEC_NAMESPACE, false)) {
+            size_t w1 = prefs.putBytes("sp_salt", newSalt, sizeof(newSalt));
+            size_t w2 = prefs.putBytes("sp_hash", newHash, sizeof(newHash));
+            prefs.end();
+            if (w1 == sizeof(newSalt) && w2 == sizeof(newHash)) {
+                memcpy(_superSalt, newSalt, sizeof(_superSalt));
+                memcpy(_superHash, newHash, sizeof(_superHash));
+                _superPwdConfigured = true;
+                ok = true;
+            }
+        }
+        xSemaphoreGive(_mutex);
+    }
+
+    memset(newSalt, 0, sizeof(newSalt));
+    memset(newHash, 0, sizeof(newHash));
+    if (ok) {
+        Serial.println("[SEC] Super Password Tecnico salvata in NVS (SHA-256 + salt).");
+    }
+    return ok;
+}
+
+bool ConfigManager::clearSuperPassword() {
+    if (!_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        Preferences prefs;
+        if (prefs.begin(NVS_SEC_NAMESPACE, false)) {
+            prefs.clear();
+            prefs.end();
+            ok = true;
+        }
+        _superPwdConfigured = false;
+        memset(_superSalt, 0, sizeof(_superSalt));
+        memset(_superHash, 0, sizeof(_superHash));
+        xSemaphoreGive(_mutex);
+    }
+    Serial.printf("[SEC] Rimozione Super Password Tecnico da NVS: %s\n", ok ? "OK" : "ERRORE");
     return ok;
 }
 
@@ -630,6 +810,8 @@ void ConfigManager::printDiagnostics() {
                   cfg.displayTimeoutSec,
                   cfg.displaySleepOff ? "Spegnimento totale" : "Standby orologio/logo");
     Serial.printf(" - Password Web (len) : %u caratteri\n", strlen(cfg.webPassword));
+    Serial.printf(" - Super Password     : %s\n",
+                  isSuperPasswordConfigured() ? "CONFIGURATA (NVS SHA-256)" : "NON CONFIGURATA (Wizard attivo)");
     Serial.printf(" - Durata Impulso Relè: %u ms (Hard Cap: %u ms)\n", cfg.relayPulseMs, MAX_RELAY_PULSE_MS);
     Serial.printf(" - Stato Sospensione  : %s\n", cfg.suspended ? "SOSPESO (Campanella Disattivata)" : "ATTIVO");
     Serial.printf(" - Orari Programmati  : %u suoni giornalieri (Lun-Sab)\n", cfg.schedule.size());
