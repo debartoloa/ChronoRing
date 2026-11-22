@@ -68,6 +68,18 @@ All'avvio, il firmware esegue una scansione hardware automatica sul bus I2C (`0x
 
 ---
 
+## 🖨️ Hardware & 3D Enclosure
+
+Il repository include i file del **case 3D compatto** progettato per la scheda **Freenove ESP32-S3 Display 2.8" (`FNK0104B`)** con collegamento del modulo relè su porta **UART** (`GPIO 44` / `RXD`):
+
+- **Stampa diretta (`.stl`)**: [`hardware/enclosure/stl/ChronoRing_BOX.stl`](./hardware/enclosure/stl/ChronoRing_BOX.stl)
+- **Sorgente Fusion 360 (`.f3d`)**: [`hardware/enclosure/cad/ChronoRing_BOX.f3d`](./hardware/enclosure/cad/ChronoRing_BOX.f3d)
+- **Profilo testato**: **Anycubic Slicer**, filamento **eSUN PETG Basic**, **5 perimetri** e impostazioni standard PETG.
+
+👉 Consulta la guida completa nella cartella [**`hardware/enclosure/`**](./hardware/enclosure/).
+
+---
+
 ## ⚠️ Nota Importante sul Relè all'Avvio (Connettore UART a 4 Pin)
 
 Sulla scheda **Freenove ESP32-S3**, il connettore UART a 4 pin espone `5V`, `GND`, `TX (GPIO 43)` e `RX (GPIO 44)`:
@@ -155,6 +167,13 @@ Esp32-Campanella/
 │   ├── bootloader.bin
 │   ├── firmware.bin
 │   └── partitions.bin
+├── hardware/
+│   └── enclosure/                   # Case 3D per Freenove ESP32-S3 Display 2.8"
+│       ├── cad/                     # File sorgenti CAD modificabili (.f3d Fusion 360)
+│       │   └── ChronoRing_BOX.f3d
+│       ├── stl/                     # Modelli pronti per slicing e stampa 3D (.stl)
+│       │   └── ChronoRing_BOX.stl
+│       └── README.md                # Parametri di stampa testati e istruzioni
 ├── include/
 │   └── lv_conf.h                    # Configurazione LVGL v8.3 (PSRAM / SRAM dinamica)
 ├── src/
