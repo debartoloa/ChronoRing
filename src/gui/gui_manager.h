@@ -50,6 +50,9 @@ private:
     static bool _inStandby;
     static uint32_t _displayTimeoutMs;
     static bool _displaySleepOff;
+    static uint32_t _lastTextRefreshMs;
+    static uint32_t _showIpUntilMs;
+    static volatile bool _headerIpDirty;
 
     // Buffer PSRAM/SRAM per il Logo Scuola RGB565
     static uint8_t*     _logoPixelBuf;
@@ -105,5 +108,6 @@ private:
     static void onRingNowClicked(lv_event_t* e);
     static void onSuspendToggleClicked(lv_event_t* e);
     static void onStandbyTouched(lv_event_t* e);
+    static void onHeaderClicked(lv_event_t* e);
     static void guiTask(void* pvParameters);
 };

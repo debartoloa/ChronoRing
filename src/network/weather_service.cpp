@@ -57,7 +57,7 @@ void WeatherService::begin() {
         xTaskCreatePinnedToCore(
             WeatherService::weatherTask,
             "ChronoWeatherTask",
-            6144,
+            8192,
             nullptr,
             1, // Priorità bassa in background
             &_taskHandle,
@@ -109,21 +109,32 @@ bool WeatherService::fetchFromOpenMeteo() {
 
     HTTPClient http;
     http.setTimeout(8000);
+    http.setReuse(false);
 
     if (!http.begin(client, OPEN_METEO_URL)) {
         Serial.println("[WEATHER] Impossibile inizializzare HTTPClient.");
+        http.end();
+        client.stop();
         return false;
     }
 
     int httpCode = http.GET();
     if (httpCode != HTTP_CODE_OK) {
         Serial.printf("[WEATHER] Errore HTTP GET: codice %d\n", httpCode);
+        if (httpCode <= 0) {
+            // Segnala errore di trasporto/DNS al watchdog Wi-Fi (escludendo errori applicativi 4xx/5xx)
+            NetworkManager::reportInternetHealth(false);
+        }
         http.end();
+        client.stop();
         return false;
     }
 
     String payload = http.getString();
     http.end();
+    client.stop();
+
+    NetworkManager::reportInternetHealth(true);
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload);

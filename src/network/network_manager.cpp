@@ -6,6 +6,7 @@
 #include <DNSServer.h>
 #include <ArduinoJson.h>
 #include <esp_sntp.h>
+#include <esp_wifi.h>
 
 static DNSServer s_dnsServer;
 static const IPAddress AP_LOCAL_IP(192, 168, 4, 1);
@@ -26,20 +27,68 @@ volatile uint32_t NetworkManager::_lastScanTimestampMs = 0;
 volatile bool NetworkManager::_hasConnectedStaOnce = false;
 volatile bool NetworkManager::_apTimedOut = false;
 uint32_t NetworkManager::_apLastActivityMs = 0;
+volatile bool NetworkManager::_mdnsRefreshRequested = false;
+volatile bool NetworkManager::_staLostIpEvent = false;
+volatile uint32_t NetworkManager::_staDisconnectCount = 0;
+volatile uint32_t NetworkManager::_mdnsRestartCount = 0;
+volatile bool NetworkManager::_dnsEverWorked = false;
+volatile uint8_t NetworkManager::_consecutiveHealthFails = 0;
+uint32_t NetworkManager::_lastMdnsRefreshMs = 0;
+bool NetworkManager::_wifiEventRegistered = false;
 TaskHandle_t NetworkManager::_netTaskHandle = nullptr;
 
 constexpr const char* NetworkManager::MDNS_HOSTNAME;
 constexpr const char* NetworkManager::FALLBACK_AP_SSID;
 constexpr const char* NetworkManager::FALLBACK_AP_PASS;
 constexpr uint32_t NetworkManager::WIFI_CONNECT_TIMEOUT_MS;
+constexpr uint32_t NetworkManager::MDNS_REFRESH_INTERVAL_MS;
+constexpr uint32_t NetworkManager::WIFI_HEALTH_CHECK_INTERVAL_MS;
+constexpr uint8_t  NetworkManager::WIFI_ZOMBIE_FAIL_THRESHOLD;
 constexpr const char* NetworkManager::TZ_ITALY_POSIX;
 constexpr const char* NetworkManager::NTP_SERVER_1;
 constexpr const char* NetworkManager::NTP_SERVER_2;
+
+static void s_onWifiEvent(WiFiEvent_t event) {
+    NetworkManager::notifyWifiEvent(static_cast<int>(event));
+}
+
+void NetworkManager::notifyWifiEvent(int eventId) {
+    switch (static_cast<WiFiEvent_t>(eventId)) {
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            WiFi.setSleep(false);
+            break;
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            _staLostIpEvent = false;
+            _mdnsRefreshRequested = true;
+            break;
+        case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+            _staLostIpEvent = true;
+            break;
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            _staDisconnectCount = _staDisconnectCount + 1;
+            break;
+        default:
+            break;
+    }
+}
+
+void NetworkManager::disableWifiPowerSave() {
+    // ChronoRing è alimentato da rete: disabilita sempre il Modem Sleep per non perdere pacchetti multicast mDNS
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+}
 
 void NetworkManager::begin() {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(true);
     WiFi.setHostname(MDNS_HOSTNAME);
+
+    if (!_wifiEventRegistered) {
+        WiFi.onEvent(s_onWifiEvent);
+        _wifiEventRegistered = true;
+    }
+
+    disableWifiPowerSave();
 
     // Configura subito il fuso orario POSIX anche prima della connessione
     setenv("TZ", TZ_ITALY_POSIX, 1);
@@ -49,7 +98,7 @@ void NetworkManager::begin() {
     if (!connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
         startFallbackAP();
     } else {
-        setupMdnsAndNtp();
+        setupMdnsAndNtp(true);
     }
 
     // Avvia il task FreeRTOS dedicato alla rete su CHRONO_NET_CORE (Core 0)
@@ -185,7 +234,7 @@ String NetworkManager::getOrStartWifiScanJson() {
     return "{\"status\":\"running\",\"networks\":[]}";
 }
 
-bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
+bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan) {
     SystemConfig cfg = ConfigManager::getConfig();
     if (strlen(cfg.wifiSsid) == 0) {
         Serial.println("[NET] Nessun SSID Wi-Fi configurato in /config.json.");
@@ -194,10 +243,12 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
     }
 
     // Verifica preventiva: evita di bloccare 20s o causare channel-hopping se la rete non esiste
-    if (!isSavedNetworkVisible(cfg.wifiSsid)) {
-        Serial.printf("[NET] Avvio immediato Hotspot '%s' (rete salvata non presente).\n", FALLBACK_AP_SSID);
-        WiFi.setAutoReconnect(false);
-        WiFi.disconnect(false, true);
+    if (!skipPreScan && !isSavedNetworkVisible(cfg.wifiSsid)) {
+        Serial.printf("[NET] Rete '%s' non rilevata nell'etere.\n", cfg.wifiSsid);
+        if (!isApLocked() && !_apTimedOut) {
+            WiFi.setAutoReconnect(false);
+            WiFi.disconnect(false, true);
+        }
         _staConnected = false;
         return false;
     }
@@ -207,10 +258,12 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
 
     WiFi.mode(_apActive ? WIFI_AP_STA : WIFI_STA);
     WiFi.setAutoReconnect(true);
+    disableWifiPowerSave();
     WiFi.begin(cfg.wifiSsid, cfg.wifiPassword);
 
     uint32_t startMs = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startMs < timeoutMs)) {
+    while ((WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) &&
+           (millis() - startMs < timeoutMs)) {
         if (_apActive) {
             s_dnsServer.processNextRequest();
         }
@@ -219,22 +272,32 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs) {
     }
     Serial.println();
 
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
         _staConnected = true;
+        _staLostIpEvent = false;
         _hasConnectedStaOnce = true;
         _apTimedOut = false;
+        _consecutiveHealthFails = 0;
         if (_apActive || WiFi.getMode() != WIFI_STA) {
             Serial.println("[NET] Connessione STA stabilita: disattivazione totale Access Point di fallback.");
             stopFallbackAP();
         }
+        disableWifiPowerSave();
         Serial.printf("[NET] Connesso! IP: %s | Hostname: http://%s.local | RSSI: %d dBm\n",
                       WiFi.localIP().toString().c_str(), MDNS_HOSTNAME, WiFi.RSSI());
         return true;
     }
 
-    Serial.println("[NET] ATTENZIONE: Connessione Wi-Fi fallita entro il timeout. Arresto ricerca STA.");
-    WiFi.setAutoReconnect(false);
-    WiFi.disconnect(false, true);
+    Serial.println("[NET] ATTENZIONE: Connessione Wi-Fi fallita entro il timeout.");
+    if (_apActive || (!isApLocked() && !_apTimedOut)) {
+        // Evita channel-hopping mentre l'Hotspot di emergenza è attivo
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, true);
+    } else {
+        // Con AP bloccato manteniamo autoReconnect attivo affinché lo stack possa riagganciarsi
+        WiFi.disconnect(false, false);
+        WiFi.setAutoReconnect(true);
+    }
     _staConnected = false;
     return false;
 }
@@ -287,6 +350,7 @@ void NetworkManager::stopFallbackAP() {
     if (_apActive || WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
         WiFi.softAPdisconnect(true);
         WiFi.mode(WIFI_STA);
+        disableWifiPowerSave();
     }
     _apActive = false;
 }
@@ -304,15 +368,30 @@ bool NetworkManager::isApLocked() {
     return _hasConnectedStaOnce && ConfigManager::isApLockAfterSta();
 }
 
-void NetworkManager::setupMdnsAndNtp() {
-    if (!_mdnsStarted) {
-        if (MDNS.begin(MDNS_HOSTNAME)) {
-            MDNS.addService("http", "tcp", 80);
-            _mdnsStarted = true;
-            Serial.printf("[NET] mDNS avviato: http://%s.local\n", MDNS_HOSTNAME);
-        } else {
-            Serial.println("[NET] Avviso: Inizializzazione mDNS non riuscita.");
-        }
+void NetworkManager::restartMdns() {
+    if (_mdnsStarted) {
+        MDNS.end();
+        _mdnsStarted = false;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    if (MDNS.begin(MDNS_HOSTNAME)) {
+        MDNS.setInstanceName("ChronoRing");
+        MDNS.addService("http", "tcp", 80);
+        _mdnsStarted = true;
+        _mdnsRestartCount = _mdnsRestartCount + 1;
+        _lastMdnsRefreshMs = millis();
+        Serial.printf("[NET] mDNS (ri)avviato: http://%s.local | IP: %s (refresh #%lu)\n",
+                      MDNS_HOSTNAME, getIpAddress().c_str(), (unsigned long)_mdnsRestartCount);
+    } else {
+        _lastMdnsRefreshMs = millis();
+        Serial.println("[NET] Avviso: Inizializzazione mDNS non riuscita.");
+    }
+}
+
+void NetworkManager::setupMdnsAndNtp(bool forceMdnsRestart) {
+    if (forceMdnsRestart || !_mdnsStarted) {
+        restartMdns();
     }
 
     if (_staConnected && !_ntpConfigured) {
@@ -321,6 +400,29 @@ void NetworkManager::setupMdnsAndNtp() {
         Serial.printf("[NET] Client NTP avviato (%s, %s) | TZ: %s\n",
                       NTP_SERVER_1, NTP_SERVER_2, TZ_ITALY_POSIX);
     }
+}
+
+void NetworkManager::requestMdnsRefresh() {
+    _mdnsRefreshRequested = true;
+}
+
+void NetworkManager::reportInternetHealth(bool ok) {
+    if (ok) {
+        _dnsEverWorked = true;
+        _consecutiveHealthFails = 0;
+    } else {
+        if (_dnsEverWorked && _consecutiveHealthFails < 255) {
+            _consecutiveHealthFails = _consecutiveHealthFails + 1;
+        }
+    }
+}
+
+uint32_t NetworkManager::getStaDisconnectCount() {
+    return _staDisconnectCount;
+}
+
+uint32_t NetworkManager::getMdnsRestartCount() {
+    return _mdnsRestartCount;
 }
 
 void NetworkManager::requestReconnect() {
@@ -332,7 +434,9 @@ void NetworkManager::requestApRestart() {
 }
 
 void NetworkManager::networkTask(void* pvParameters) {
+    (void)pvParameters;
     uint32_t lastRetryMs = millis();
+    uint32_t lastHealthCheckMs = millis();
     uint32_t disconnectStartMs = 0;
 
     for (;;) {
@@ -380,32 +484,79 @@ void NetworkManager::networkTask(void* pvParameters) {
             WiFi.disconnect(false);
             vTaskDelay(pdMS_TO_TICKS(200));
             if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
-                setupMdnsAndNtp();
+                setupMdnsAndNtp(true);
             } else if (!isApLocked() && !_apTimedOut) {
                 startFallbackAP();
             }
             lastRetryMs = millis();
+            lastHealthCheckMs = millis();
         }
 
         wl_status_t status = WiFi.status();
         bool scanGraceActive = _scanInProgress ||
                                (WiFi.scanComplete() == WIFI_SCAN_RUNNING) ||
                                (_lastScanTimestampMs > 0 && (millis() - _lastScanTimestampMs < 5000));
+        bool linkUp = (status == WL_CONNECTED) &&
+                      (WiFi.localIP() != IPAddress(0, 0, 0, 0)) &&
+                      !_staLostIpEvent;
 
-        if (status == WL_CONNECTED) {
+        if (linkUp) {
             disconnectStartMs = 0;
             _hasConnectedStaOnce = true;
             _apTimedOut = false;
             if (!_staConnected) {
                 _staConnected = true;
+                _consecutiveHealthFails = 0;
+                disableWifiPowerSave();
                 Serial.printf("[NET] Connessione Wi-Fi ripristinata! IP: %s\n",
                               WiFi.localIP().toString().c_str());
-                setupMdnsAndNtp();
+                setupMdnsAndNtp(true);
+                _mdnsRefreshRequested = false;
+                lastHealthCheckMs = millis();
             }
             if (_apActive || (!scanGraceActive && WiFi.getMode() != WIFI_STA)) {
                 Serial.println("[NET] Rete STA attiva: disattivazione interfaccia SoftAP per sicurezza.");
                 stopFallbackAP();
                 WiFi.setAutoReconnect(true);
+                disableWifiPowerSave();
+                _mdnsRefreshRequested = true;
+            }
+
+            // Rinnovo mDNS su evento GOT_IP / cambio DHCP oppure periodicamente ogni 30 minuti
+            if (_mdnsRefreshRequested || !_mdnsStarted ||
+                (millis() - _lastMdnsRefreshMs >= MDNS_REFRESH_INTERVAL_MS)) {
+                _mdnsRefreshRequested = false;
+                disableWifiPowerSave();
+                restartMdns();
+            }
+
+            // Watchdog adattivo anti-stato "zombie": rileva espulsioni silenti dal router/DHCP
+            if (!scanGraceActive && (millis() - lastHealthCheckMs >= WIFI_HEALTH_CHECK_INTERVAL_MS)) {
+                lastHealthCheckMs = millis();
+                disableWifiPowerSave();
+
+                IPAddress gw = WiFi.gatewayIP();
+                IPAddress resolvedIp;
+                bool dnsOk = (gw != IPAddress(0, 0, 0, 0)) && (WiFi.hostByName(NTP_SERVER_1, resolvedIp) == 1);
+                reportInternetHealth(dnsOk);
+
+                if (!dnsOk && _dnsEverWorked) {
+                    Serial.printf("[NET] Avviso health-check Wi-Fi: risoluzione DNS fallita (%u/%u).\n",
+                                  _consecutiveHealthFails, WIFI_ZOMBIE_FAIL_THRESHOLD);
+                }
+
+                if (_consecutiveHealthFails >= WIFI_ZOMBIE_FAIL_THRESHOLD) {
+                    Serial.println("[NET] Watchdog STA: rilevato stato Wi-Fi zombie, riavvio associazione...");
+                    _consecutiveHealthFails = 0;
+                    _staConnected = false;
+                    WiFi.disconnect(false, false);
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, true)) {
+                        setupMdnsAndNtp(true);
+                    }
+                    lastRetryMs = millis();
+                    lastHealthCheckMs = millis();
+                }
             }
         } else {
             // Se l'Hotspot AP è attivo, controlla il timeout di inattività senza client collegati
@@ -455,8 +606,8 @@ void NetworkManager::networkTask(void* pvParameters) {
                         lastRetryMs = millis();
                         if (isSavedNetworkVisible(cfg.wifiSsid)) {
                             Serial.printf("[NET] Rete '%s' nuovamente visibile: tentativo di riconnessione...\n", cfg.wifiSsid);
-                            if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
-                                setupMdnsAndNtp();
+                            if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, true)) {
+                                setupMdnsAndNtp(true);
                             } else if (!isApLocked() && !_apTimedOut) {
                                 startFallbackAP();
                             }
@@ -527,7 +678,7 @@ String NetworkManager::getFormattedDate() {
 }
 
 bool NetworkManager::isStaConnected() {
-    return _staConnected && (WiFi.status() == WL_CONNECTED);
+    return _staConnected && (WiFi.status() == WL_CONNECTED) && (WiFi.localIP() != IPAddress(0, 0, 0, 0));
 }
 
 bool NetworkManager::isApActive() {

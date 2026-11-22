@@ -5,6 +5,23 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-11-22
+
+### Fixed
+- **Stabilità Rete Wi-Fi & Raggiungibilità `chronoring.local` su Uptime H24 (`NetworkManager`)**:
+  - Disattivato il risparmio energetico radio Modem Sleep (`WiFi.setSleep(false)` e `esp_wifi_set_ps(WIFI_PS_NONE)`) all'avvio, alla riconnessione e allo spegnimento SoftAP per impedire la perdita dei pacchetti multicast mDNS (`224.0.0.251:5353`) su sessioni prolungate di più giorni.
+  - Registrato handler eventi Wi-Fi (`ARDUINO_EVENT_WIFI_STA_GOT_IP`, `LOST_IP`, `DISCONNECTED`) con riavvio automatico e pulito di `MDNS` (`MDNS.end()` + `MDNS.begin()` + `addService`) ad ogni rinnovo DHCP/cambio IP e periodicamente ogni 30 minuti (`MDNS_REFRESH_INTERVAL_MS`).
+  - Verifica esplicita di `WiFi.localIP() != 0.0.0.0` in `isStaConnected()` e mantenimento di `WiFi.setAutoReconnect(true)` quando l'Hotspot AP è bloccato (`isApLocked()`), evitando stalli nella riconnessione automatica.
+  - Aggiunto **Watchdog adattivo anti-stato "zombie"** (`WIFI_HEALTH_CHECK_INTERVAL_MS` = 5 min): rileva eventuali espulsioni silenti dal router/DHCP dopo che la rete era funzionante e forza il ripristino pulito della sessione STA.
+- **Hardening HTTPS Meteo & Riduzione Frammentazione Heap GUI (`WeatherService`, `GuiManager`)**:
+  - Aumentato lo stack di `ChronoWeatherTask` a `8192` byte e forzato `http.setReuse(false)` + `client.stop()` su ogni percorso di uscita in `fetchFromOpenMeteo()`.
+  - Portato il refresh testuale LVGL in `GuiManager::refreshDynamicData()` a max `1 Hz` tramite buffer su stack e controllo `strcmp` prima di aggiornare le label, saltando i ridisegni quando il display è spento al `0%`.
+
+### Added
+- **Mostra Indirizzo IP su Display Touch & Diagnostica Seriale Estesa (`GuiManager`, `main.cpp`)**:
+  - Toccando la barra superiore (Header) sul display touch da 2.8", la data lascia temporaneamente spazio per 10 secondi all'indirizzo `IP: xxx.xxx.xxx.xxx` (utile nelle reti scolastiche che filtrano `.local`).
+  - Aggiunto comando seriale `'m'` per forzare il riavvio mDNS e arricchito il comando `'p'` con uptime, Heap libero/minimo storico, RSSI e contatori disconnessioni Wi-Fi/mDNS.
+
 ## [1.3.0] - 2026-11-20
 
 ### Added

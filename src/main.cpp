@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_timer.h>
 #include "hardware_pins.h"
 #include "config_manager.h"
 #include "relay_controller.h"
@@ -88,7 +89,7 @@ void setup() {
     Serial.printf(" - Dashboard Web : http://%s.local (oppure http://%s)\n",
                   NetworkManager::MDNS_HOSTNAME, NetworkManager::getIpAddress().c_str());
     Serial.printf(" - Pagina OTA    : http://%s.local/update\n", NetworkManager::MDNS_HOSTNAME);
-    Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'a'=Attiva AP, 'p'=Diagnostica");
+    Serial.println(" - Comandi Seriali: 't'=Suona Ora, 's'=Stop Relè, 'w'=Forza Meteo, 'a'=Attiva AP, 'm'=Riavvia mDNS, 'p'=Diagnostica");
     Serial.println("==================================================");
 }
 
@@ -121,16 +122,33 @@ void loop() {
                 NetworkManager::requestManualApStart();
                 break;
             }
+            case 'm':
+            case 'M': {
+                Serial.println("[NET] Comando manuale: richiesta riavvio mDNS...");
+                NetworkManager::requestMdnsRefresh();
+                break;
+            }
             case 'p':
             case 'P': {
                 ConfigManager::printDiagnostics();
                 WeatherData wd = WeatherService::getWeatherData();
+                uint64_t upSec = static_cast<uint64_t>(esp_timer_get_time() / 1000000ULL);
+                uint32_t upDays = static_cast<uint32_t>(upSec / 86400ULL);
+                uint32_t upHours = static_cast<uint32_t>((upSec % 86400ULL) / 3600ULL);
+                uint32_t upMins = static_cast<uint32_t>((upSec % 3600ULL) / 60ULL);
+                Serial.printf(" - Uptime         : %ug %02uh %02um\n", upDays, upHours, upMins);
+                Serial.printf(" - Heap Libero    : %u KB (Minimo storico: %u KB)\n",
+                              ESP.getFreeHeap() / 1024, ESP.getMinFreeHeap() / 1024);
                 Serial.printf(" - Orario Attuale : %s (%s)\n",
                               NetworkManager::getFormattedTime().c_str(),
                               NetworkManager::getFormattedDate().c_str());
-                Serial.printf(" - Rete           : %s | IP: %s\n",
+                Serial.printf(" - Rete           : %s | IP: %s | RSSI: %ld dBm\n",
                               NetworkManager::getNetworkModeString().c_str(),
-                              NetworkManager::getIpAddress().c_str());
+                              NetworkManager::getIpAddress().c_str(),
+                              (long)NetworkManager::getRssi());
+                Serial.printf(" - Statistiche WiFi: disconnessioni=%lu | restart mDNS=%lu\n",
+                              (unsigned long)NetworkManager::getStaDisconnectCount(),
+                              (unsigned long)NetworkManager::getMdnsRestartCount());
                 Serial.printf(" - Prossimo Suono : %s\n", Scheduler::getNextBellString().c_str());
                 Serial.printf(" - Meteo          : %s | %.1f C | Umidita %d%% | Vento %.1f km/h\n",
                               wd.conditionText, wd.temperatureC, wd.humidityPct, wd.windSpeedKmh);

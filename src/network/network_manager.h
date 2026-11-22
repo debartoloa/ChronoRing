@@ -10,10 +10,13 @@
 
 class NetworkManager {
 public:
-    static constexpr const char* MDNS_HOSTNAME       = "chronoring";
-    static constexpr const char* FALLBACK_AP_SSID    = "ChronoRing-Setup";
-    static constexpr const char* FALLBACK_AP_PASS    = ""; // AP aperto per configurazione immediata
-    static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+    static constexpr const char* MDNS_HOSTNAME              = "chronoring";
+    static constexpr const char* FALLBACK_AP_SSID           = "ChronoRing-Setup";
+    static constexpr const char* FALLBACK_AP_PASS           = ""; // AP aperto per configurazione immediata
+    static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS       = 20000;
+    static constexpr uint32_t MDNS_REFRESH_INTERVAL_MS      = 30UL * 60UL * 1000UL; // 30 minuti
+    static constexpr uint32_t WIFI_HEALTH_CHECK_INTERVAL_MS = 5UL * 60UL * 1000UL;  // 5 minuti
+    static constexpr uint8_t  WIFI_ZOMBIE_FAIL_THRESHOLD    = 4;                    // ~20 min di fallimenti consecutivi
 
     // Stringa POSIX per fuso orario Italiano (CET/CEST con cambio ora solare/legale automatico)
     static constexpr const char* TZ_ITALY_POSIX      = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -95,6 +98,11 @@ public:
     static String getIpAddress();
     static String getNetworkModeString();
     static int32_t getRssi();
+    static void requestMdnsRefresh();
+    static void reportInternetHealth(bool ok);
+    static void notifyWifiEvent(int eventId);
+    static uint32_t getStaDisconnectCount();
+    static uint32_t getMdnsRestartCount();
 
 private:
     static volatile bool _staConnected;
@@ -109,10 +117,20 @@ private:
     static volatile bool _hasConnectedStaOnce;
     static volatile bool _apTimedOut;
     static uint32_t _apLastActivityMs;
+    static volatile bool _mdnsRefreshRequested;
+    static volatile bool _staLostIpEvent;
+    static volatile uint32_t _staDisconnectCount;
+    static volatile uint32_t _mdnsRestartCount;
+    static volatile bool _dnsEverWorked;
+    static volatile uint8_t _consecutiveHealthFails;
+    static uint32_t _lastMdnsRefreshMs;
+    static bool _wifiEventRegistered;
     static TaskHandle_t _netTaskHandle;
 
     static void networkTask(void* pvParameters);
-    static bool connectToSavedWiFi(uint32_t timeoutMs);
+    static bool connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan = false);
     static void startFallbackAP();
-    static void setupMdnsAndNtp();
+    static void setupMdnsAndNtp(bool forceMdnsRestart = false);
+    static void restartMdns();
+    static void disableWifiPowerSave();
 };

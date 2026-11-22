@@ -21,6 +21,9 @@ int  GuiManager::_lastRenderedWeatherCode = -999;
 bool GuiManager::_inStandby = false;
 uint32_t GuiManager::_displayTimeoutMs = GuiManager::STANDBY_TIMEOUT_MS;
 bool GuiManager::_displaySleepOff = false;
+uint32_t GuiManager::_lastTextRefreshMs = 0;
+uint32_t GuiManager::_showIpUntilMs = 0;
+volatile bool GuiManager::_headerIpDirty = false;
 
 uint8_t*     GuiManager::_logoPixelBuf = nullptr;
 lv_img_dsc_t GuiManager::_logoImgDsc   = {};
@@ -300,6 +303,7 @@ void GuiManager::enterStandby() {
 void GuiManager::exitStandby() {
     if (!g_has_display || !_inStandby || !_standbyOverlay) return;
     _inStandby = false;
+    _lastTextRefreshMs = 0; // Aggiorna immediatamente tutte le label al risveglio
     lv_obj_add_flag(_standbyOverlay, LV_OBJ_FLAG_HIDDEN);
     DisplayTouchDriver::setBacklightBrightness(BRIGHTNESS_ACTIVE);
     lv_disp_trig_activity(nullptr);
@@ -309,6 +313,19 @@ void GuiManager::exitStandby() {
 void GuiManager::onStandbyTouched(lv_event_t* e) {
     (void)e;
     exitStandby();
+}
+
+void GuiManager::onHeaderClicked(lv_event_t* e) {
+    (void)e;
+    if (!g_has_display) return;
+    uint32_t now = millis();
+    if (_showIpUntilMs != 0 && static_cast<int32_t>(_showIpUntilMs - now) > 0) {
+        _showIpUntilMs = 0;
+    } else {
+        _showIpUntilMs = now + 10000UL;
+        if (_showIpUntilMs == 0) _showIpUntilMs = 1;
+    }
+    _headerIpDirty = true;
 }
 
 // ============================================================================
@@ -409,7 +426,7 @@ void GuiManager::buildUi() {
     lv_obj_set_style_pad_all(_screenFrame, 0, 0);
     lv_obj_clear_flag(_screenFrame, LV_OBJ_FLAG_SCROLLABLE);
 
-    // 1. HEADER SUPERIORE (Status Bar)
+    // 1. HEADER SUPERIORE (Status Bar - cliccabile per mostrare l'indirizzo IP per 10s)
     lv_obj_t* header = lv_obj_create(_screenFrame);
     lv_obj_set_size(header, 308, 28);
     lv_obj_set_pos(header, 6, 6);
@@ -420,6 +437,8 @@ void GuiManager::buildUi() {
     lv_obj_set_style_pad_hor(header, 8, 0);
     lv_obj_set_style_pad_ver(header, 2, 0);
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(header, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(header, GuiManager::onHeaderClicked, LV_EVENT_CLICKED, nullptr);
 
     _lblDate = lv_label_create(header);
     lv_obj_set_style_text_font(_lblDate, &lv_font_montserrat_12, 0);
@@ -646,12 +665,7 @@ void GuiManager::applySuspendedVisuals(bool isSuspended) {
     }
 }
 
-String GuiManager::getItalianHeaderDate() {
-    struct tm timeinfo;
-    if (!NetworkManager::getCurrentLocalTime(timeinfo)) {
-        return "Attesa Sincronizzazione...";
-    }
-
+static void formatItalianDateBuf(const struct tm& timeinfo, char* out, size_t len) {
     static const char* giorni[] = {
         "Domenica", "Lunedi", "Martedi", "Mercoledi", "Giovedi", "Venerdi", "Sabato"
     };
@@ -662,17 +676,35 @@ String GuiManager::getItalianHeaderDate() {
 
     int w = (timeinfo.tm_wday >= 0 && timeinfo.tm_wday <= 6) ? timeinfo.tm_wday : 0;
     int m = (timeinfo.tm_mon >= 0 && timeinfo.tm_mon <= 11) ? timeinfo.tm_mon : 0;
+    snprintf(out, len, "%s, %02d %s", giorni[w], timeinfo.tm_mday, mesi[m]);
+}
 
+static void setLabelTextIfChanged(lv_obj_t* lbl, const char* text) {
+    if (!lbl || !text) return;
+    const char* cur = lv_label_get_text(lbl);
+    if (!cur || strcmp(cur, text) != 0) {
+        lv_label_set_text(lbl, text);
+    }
+}
+
+String GuiManager::getItalianHeaderDate() {
+    struct tm timeinfo;
+    if (!NetworkManager::getCurrentLocalTime(timeinfo)) {
+        return "Attesa Sincronizzazione...";
+    }
     char buf[36];
-    snprintf(buf, sizeof(buf), "%s, %02d %s", giorni[w], timeinfo.tm_mday, mesi[m]);
+    formatItalianDateBuf(timeinfo, buf, sizeof(buf));
     return String(buf);
 }
 
 void GuiManager::refreshDynamicData() {
     if (!g_has_display || !_screenFrame) return;
 
+    bool forceTextRefresh = false;
+
     if (_brandingDirty) {
         _brandingDirty = false;
+        forceTextRefresh = true;
         loadSchoolLogoFromFs();
         if (!_inStandby || !_displaySleepOff) {
             updateStandbyBrandingLayout();
@@ -681,6 +713,7 @@ void GuiManager::refreshDynamicData() {
 
     if (_displaySettingsDirty) {
         _displaySettingsDirty = false;
+        forceTextRefresh = true;
         _displayTimeoutMs = ConfigManager::getDisplayTimeoutSec() * 1000UL;
         _displaySleepOff  = ConfigManager::isDisplaySleepOff();
         if (_inStandby) {
@@ -695,6 +728,7 @@ void GuiManager::refreshDynamicData() {
         bool newState = _stateDirty ? _targetSuspendedState : currentCfgSuspended;
         _stateDirty = false;
         _lastAppliedSuspended = newState;
+        forceTextRefresh = true;
         applySuspendedVisuals(newState);
         if (_inStandby) {
             exitStandby(); // Risveglia il display su evento di cambio stato (es. sospensione/riattivazione da Web)
@@ -702,6 +736,7 @@ void GuiManager::refreshDynamicData() {
     }
 
     if (_inStandby && (RelayController::isActive() || _ringingDirty)) {
+        forceTextRefresh = true;
         exitStandby(); // Risveglia il display quando scatta la campanella o su evento relè
     }
 
@@ -710,61 +745,96 @@ void GuiManager::refreshDynamicData() {
         enterStandby();
     }
 
-    String fullTimeStr = NetworkManager::getFormattedTime();
-    String dateStr     = getItalianHeaderDate();
-
-    lv_label_set_text(_lblStandbyClock, fullTimeStr.c_str());
-    lv_label_set_text(_lblStandbyDate,  dateStr.c_str());
-
     bool relayActive = RelayController::isActive();
     if (_ringingDirty || (relayActive != _lastRelayActive)) {
         _ringingDirty = false;
         _lastRelayActive = relayActive;
+        forceTextRefresh = true;
         if (relayActive) {
             lv_obj_set_style_bg_color(_relayLedDot, lv_color_hex(0xF59E0B), 0);
             lv_obj_set_style_border_color(_relayIndicatorBox, lv_color_hex(0xF59E0B), 0);
             lv_obj_set_style_text_color(_lblRelayState, lv_color_hex(0xFBBF24), 0);
-            lv_label_set_text(_lblRelayState, "ATTIVO");
+            setLabelTextIfChanged(_lblRelayState, "ATTIVO");
         } else {
             lv_obj_set_style_bg_color(_relayLedDot, lv_color_hex(0x10B981), 0);
             lv_obj_set_style_border_color(_relayIndicatorBox, lv_color_hex(0x2A3B4C), 0);
             lv_obj_set_style_text_color(_lblRelayState, lv_color_hex(0x94A3B8), 0);
-            lv_label_set_text(_lblRelayState, "RIPOSO");
+            setLabelTextIfChanged(_lblRelayState, "RIPOSO");
         }
     }
 
-    lv_label_set_text(_lblClockHM,  NetworkManager::getFormattedHoursMinutes().c_str());
-    lv_label_set_text(_lblClockSec, NetworkManager::getFormattedSeconds().c_str());
-    lv_label_set_text(_lblDate, dateStr.c_str());
+    // A schermo completamente spento (0% backlight) evita allocazioni e ridisegni LVGL inutili
+    if (_inStandby && _displaySleepOff) {
+        return;
+    }
 
-    if (NetworkManager::isTimeSynced()) {
+    uint32_t now = millis();
+    if (_lastTextRefreshMs != 0 && !forceTextRefresh && !_headerIpDirty &&
+        (now - _lastTextRefreshMs < 1000)) {
+        return;
+    }
+    _headerIpDirty = false;
+    _lastTextRefreshMs = (now != 0) ? now : 1;
+
+    struct tm timeinfo;
+    bool timeValid = NetworkManager::getCurrentLocalTime(timeinfo);
+    char fullTimeBuf[12] = "--:--:--";
+    char hmBuf[8]        = "--:--";
+    char secBuf[6]       = ":--";
+    char dateBuf[36]     = "Attesa Sincronizzazione...";
+    if (timeValid) {
+        snprintf(fullTimeBuf, sizeof(fullTimeBuf), "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        snprintf(hmBuf, sizeof(hmBuf), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+        snprintf(secBuf, sizeof(secBuf), ":%02d", timeinfo.tm_sec);
+        formatItalianDateBuf(timeinfo, dateBuf, sizeof(dateBuf));
+    }
+
+    setLabelTextIfChanged(_lblStandbyClock, fullTimeBuf);
+    setLabelTextIfChanged(_lblStandbyDate,  dateBuf);
+
+    setLabelTextIfChanged(_lblClockHM,  hmBuf);
+    setLabelTextIfChanged(_lblClockSec, secBuf);
+
+    bool showIp = (_showIpUntilMs != 0) && (static_cast<int32_t>(_showIpUntilMs - now) > 0);
+    if (showIp) {
+        char ipBuf[32];
+        snprintf(ipBuf, sizeof(ipBuf), "%s: %s",
+                 NetworkManager::isApActive() ? "AP" : "IP",
+                 NetworkManager::getIpAddress().c_str());
+        lv_obj_set_style_text_color(_lblDate, lv_color_hex(0x38BDF8), 0);
+        setLabelTextIfChanged(_lblDate, ipBuf);
+    } else {
+        _showIpUntilMs = 0;
+        lv_obj_set_style_text_color(_lblDate, lv_color_hex(0xE2E8F0), 0);
+        setLabelTextIfChanged(_lblDate, dateBuf);
+    }
+
+    if (timeValid) {
         lv_obj_set_style_text_color(_lblNtpStatus, lv_color_hex(0x10B981), 0);
-        lv_label_set_text(_lblNtpStatus, LV_SYMBOL_OK " NTP");
+        setLabelTextIfChanged(_lblNtpStatus, LV_SYMBOL_OK " NTP");
     } else {
         lv_obj_set_style_text_color(_lblNtpStatus, lv_color_hex(0xF59E0B), 0);
-        lv_label_set_text(_lblNtpStatus, LV_SYMBOL_REFRESH " NTP");
+        setLabelTextIfChanged(_lblNtpStatus, LV_SYMBOL_REFRESH " NTP");
     }
 
     if (NetworkManager::isStaConnected()) {
         lv_obj_set_style_text_color(_lblWifiStatus, lv_color_hex(0x38BDF8), 0);
         char wifiBuf[20];
         snprintf(wifiBuf, sizeof(wifiBuf), "%s %lddB", LV_SYMBOL_WIFI, (long)NetworkManager::getRssi());
-        lv_label_set_text(_lblWifiStatus, wifiBuf);
+        setLabelTextIfChanged(_lblWifiStatus, wifiBuf);
     } else if (NetworkManager::isApActive()) {
         lv_obj_set_style_text_color(_lblWifiStatus, lv_color_hex(0xF59E0B), 0);
-        lv_label_set_text(_lblWifiStatus, LV_SYMBOL_WIFI " AP-Setup");
+        setLabelTextIfChanged(_lblWifiStatus, LV_SYMBOL_WIFI " AP-Setup");
     } else {
         lv_obj_set_style_text_color(_lblWifiStatus, lv_color_hex(0xEF4444), 0);
-        lv_label_set_text(_lblWifiStatus, LV_SYMBOL_WARNING " NoNet");
+        setLabelTextIfChanged(_lblWifiStatus, LV_SYMBOL_WARNING " NoNet");
     }
 
     if (!_lastAppliedSuspended) {
         String evLabel, evCountdown;
         Scheduler::getNextBellDetails(evLabel, evCountdown);
-        if (strcmp(lv_label_get_text(_lblEventTitle), evLabel.c_str()) != 0) {
-            lv_label_set_text(_lblEventTitle, evLabel.c_str());
-        }
-        lv_label_set_text(_lblEventSub, evCountdown.c_str());
+        setLabelTextIfChanged(_lblEventTitle, evLabel.c_str());
+        setLabelTextIfChanged(_lblEventSub,   evCountdown.c_str());
     }
 
     WeatherData wd = WeatherService::getWeatherData();
@@ -776,15 +846,15 @@ void GuiManager::refreshDynamicData() {
 
         char tBuf[20];
         snprintf(tBuf, sizeof(tBuf), "%.1f \xC2\xB0" "C", wd.temperatureC);
-        lv_label_set_text(_lblWeatherTemp, tBuf);
+        setLabelTextIfChanged(_lblWeatherTemp, tBuf);
 
         char hBuf[24];
         snprintf(hBuf, sizeof(hBuf), "Umidita: %d%%", wd.humidityPct);
-        lv_label_set_text(_lblWeatherHum, hBuf);
+        setLabelTextIfChanged(_lblWeatherHum, hBuf);
 
         char wBuf[28];
         snprintf(wBuf, sizeof(wBuf), "Vento: %.1f km/h", wd.windSpeedKmh);
-        lv_label_set_text(_lblWeatherWind, wBuf);
+        setLabelTextIfChanged(_lblWeatherWind, wBuf);
     }
 }
 
@@ -794,6 +864,7 @@ void GuiManager::onRingNowClicked(lv_event_t* e) {
     uint32_t pulseMs = ConfigManager::getRelayPulseMs();
     Serial.printf("[GUI] Pressione touch [SUONA ORA] -> Attivazione relè per %u ms\n", pulseMs);
     RelayController::trigger(pulseMs);
+    _lastTextRefreshMs = 0;
     refreshDynamicData();
 }
 
@@ -805,6 +876,7 @@ void GuiManager::onSuspendToggleClicked(lv_event_t* e) {
                   newSusp ? "true" : "false");
     ConfigManager::setSuspended(newSusp);
     gui_update_state(newSusp);
+    _lastTextRefreshMs = 0;
     refreshDynamicData();
 }
 
@@ -819,7 +891,8 @@ void GuiManager::guiTask(void* pvParameters) {
         }
 
         uint32_t now = millis();
-        if (_stateDirty || _brandingDirty || _ringingDirty || _displaySettingsDirty || (RelayController::isActive() != _lastRelayActive) || (now - lastRefreshMs >= 250)) {
+        if (_stateDirty || _brandingDirty || _ringingDirty || _displaySettingsDirty || _headerIpDirty ||
+            (RelayController::isActive() != _lastRelayActive) || (now - lastRefreshMs >= 250)) {
             lastRefreshMs = now;
             refreshDynamicData();
         }
