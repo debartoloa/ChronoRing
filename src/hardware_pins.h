@@ -9,7 +9,7 @@
  */
 
 // Versione corrente del firmware ChronoRing (esposta su seriale, Dashboard Web e pagina OTA)
-#define CHRONORING_FW_VERSION "1.4.0"
+#define CHRONORING_FW_VERSION "1.5.0"
 
 // Flag globale definito in display_touch_driver.cpp che indica se il display/touch è fisicamente collegato
 extern bool g_has_display;

@@ -29,6 +29,8 @@ constexpr uint32_t ConfigManager::MAX_DISPLAY_TIMEOUT_SEC;
 constexpr uint16_t ConfigManager::DEFAULT_AP_TIMEOUT_MIN;
 constexpr uint16_t ConfigManager::MAX_AP_TIMEOUT_MIN;
 constexpr const char* ConfigManager::NVS_SEC_NAMESPACE;
+constexpr const char* ConfigManager::NVS_NET_NAMESPACE;
+constexpr size_t ConfigManager::MAX_SAVED_WIFI_NETWORKS;
 constexpr size_t ConfigManager::SUPER_PWD_MIN_LEN;
 constexpr size_t ConfigManager::SUPER_PWD_MAX_LEN;
 constexpr uint16_t ConfigManager::SUPER_PWD_HASH_ROUNDS;
@@ -89,9 +91,42 @@ uint16_t ConfigManager::clampApTimeout(uint16_t min) {
     return min;
 }
 
+static void syncPrimaryWifiFromHistory(SystemConfig& cfg) {
+    if (!cfg.savedWifiNetworks.empty()) {
+        strlcpy(cfg.wifiSsid, cfg.savedWifiNetworks[0].ssid, sizeof(cfg.wifiSsid));
+        strlcpy(cfg.wifiPassword, cfg.savedWifiNetworks[0].password, sizeof(cfg.wifiPassword));
+    } else {
+        cfg.wifiSsid[0] = '\0';
+        cfg.wifiPassword[0] = '\0';
+    }
+}
+
+static void upsertSavedWifiInternal(SystemConfig& cfg, const char* ssid, const char* password) {
+    if (!ssid || strlen(ssid) == 0) return;
+
+    for (auto it = cfg.savedWifiNetworks.begin(); it != cfg.savedWifiNetworks.end();) {
+        if (strcmp(it->ssid, ssid) == 0) {
+            it = cfg.savedWifiNetworks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    SavedWifiNetwork entry;
+    strlcpy(entry.ssid, ssid, sizeof(entry.ssid));
+    strlcpy(entry.password, password ? password : "", sizeof(entry.password));
+    cfg.savedWifiNetworks.insert(cfg.savedWifiNetworks.begin(), entry);
+
+    if (cfg.savedWifiNetworks.size() > ConfigManager::MAX_SAVED_WIFI_NETWORKS) {
+        cfg.savedWifiNetworks.resize(ConfigManager::MAX_SAVED_WIFI_NETWORKS);
+    }
+    syncPrimaryWifiFromHistory(cfg);
+}
+
 void ConfigManager::loadDefaults(SystemConfig& cfg) {
     cfg.wifiSsid[0] = '\0';
     cfg.wifiPassword[0] = '\0';
+    cfg.savedWifiNetworks.clear();
     strlcpy(cfg.apSsid, DEFAULT_AP_SSID, sizeof(cfg.apSsid));
     strlcpy(cfg.apPassword, DEFAULT_AP_PASSWORD, sizeof(cfg.apPassword));
     strlcpy(cfg.webPassword, DEFAULT_WEB_PASSWORD, sizeof(cfg.webPassword));
@@ -102,6 +137,12 @@ void ConfigManager::loadDefaults(SystemConfig& cfg) {
     cfg.displaySleepOff = false;
     cfg.apTimeoutMin = DEFAULT_AP_TIMEOUT_MIN;
     cfg.apLockAfterSta = true;
+    cfg.staticIpEnabled = false;
+    cfg.staticIp[0] = '\0';
+    cfg.staticGateway[0] = '\0';
+    cfg.staticSubnet[0] = '\0';
+    cfg.staticDns1[0] = '\0';
+    cfg.staticDns2[0] = '\0';
     cfg.schedule.clear();
 
     // Orari scolastici predefiniti (Lun-Sab):
@@ -198,6 +239,44 @@ bool ConfigManager::loadFromFileInternal() {
     strlcpy(_config.wifiSsid, ssid, sizeof(_config.wifiSsid));
     strlcpy(_config.wifiPassword, wifiPwd, sizeof(_config.wifiPassword));
 
+    _config.savedWifiNetworks.clear();
+    if (doc["wifi_networks"].is<JsonArray>()) {
+        for (JsonObject obj : doc["wifi_networks"].as<JsonArray>()) {
+            if (_config.savedWifiNetworks.size() >= MAX_SAVED_WIFI_NETWORKS) break;
+            const char* nSsid = obj["ssid"] | "";
+            const char* nPwd  = obj["password"] | "";
+            if (strlen(nSsid) == 0) continue;
+            bool dup = false;
+            for (const auto& existing : _config.savedWifiNetworks) {
+                if (strcmp(existing.ssid, nSsid) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                SavedWifiNetwork item;
+                strlcpy(item.ssid, nSsid, sizeof(item.ssid));
+                strlcpy(item.password, nPwd, sizeof(item.password));
+                _config.savedWifiNetworks.push_back(item);
+            }
+        }
+    }
+    if (strlen(ssid) > 0) {
+        bool alreadyInList = false;
+        for (const auto& existing : _config.savedWifiNetworks) {
+            if (strcmp(existing.ssid, ssid) == 0) {
+                alreadyInList = true;
+                break;
+            }
+        }
+        if (!alreadyInList) {
+            upsertSavedWifiInternal(_config, ssid, wifiPwd);
+        }
+    }
+    if (!_config.savedWifiNetworks.empty()) {
+        syncPrimaryWifiFromHistory(_config);
+    }
+
     const char* apS = doc["ap_ssid"] | DEFAULT_AP_SSID;
     if (strlen(apS) == 0) {
         apS = DEFAULT_AP_SSID;
@@ -227,6 +306,13 @@ bool ConfigManager::loadFromFileInternal() {
     uint16_t rawApMin = doc["ap_timeout_min"] | DEFAULT_AP_TIMEOUT_MIN;
     _config.apTimeoutMin = clampApTimeout(rawApMin);
     _config.apLockAfterSta = doc["ap_lock_after_sta"] | true;
+
+    _config.staticIpEnabled = doc["static_ip_enabled"] | false;
+    strlcpy(_config.staticIp, doc["static_ip"] | "", sizeof(_config.staticIp));
+    strlcpy(_config.staticGateway, doc["static_gateway"] | "", sizeof(_config.staticGateway));
+    strlcpy(_config.staticSubnet, doc["static_subnet"] | "", sizeof(_config.staticSubnet));
+    strlcpy(_config.staticDns1, doc["static_dns1"] | "", sizeof(_config.staticDns1));
+    strlcpy(_config.staticDns2, doc["static_dns2"] | "", sizeof(_config.staticDns2));
 
     _config.schedule.clear();
     if (doc["schedule"].is<JsonArray>()) {
@@ -264,6 +350,13 @@ static void populateJsonFromConfig(JsonDocument& doc, const SystemConfig& cfg,
                                    uint32_t clampedPulse, uint32_t clampedDispSec, uint16_t clampedApMin) {
     doc["wifi_ssid"] = cfg.wifiSsid;
     doc["wifi_password"] = cfg.wifiPassword;
+    JsonArray wifiArr = doc["wifi_networks"].to<JsonArray>();
+    for (const auto& w : cfg.savedWifiNetworks) {
+        if (strlen(w.ssid) == 0) continue;
+        JsonObject wObj = wifiArr.add<JsonObject>();
+        wObj["ssid"] = w.ssid;
+        wObj["password"] = w.password;
+    }
     doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : ConfigManager::DEFAULT_AP_SSID;
     doc["ap_password"] = cfg.apPassword;
     doc["web_password"] = cfg.webPassword;
@@ -275,6 +368,12 @@ static void populateJsonFromConfig(JsonDocument& doc, const SystemConfig& cfg,
     doc["display_sleep_off"] = cfg.displaySleepOff;
     doc["ap_timeout_min"] = clampedApMin;
     doc["ap_lock_after_sta"] = cfg.apLockAfterSta;
+    doc["static_ip_enabled"] = cfg.staticIpEnabled;
+    doc["static_ip"] = cfg.staticIp;
+    doc["static_gateway"] = cfg.staticGateway;
+    doc["static_subnet"] = cfg.staticSubnet;
+    doc["static_dns1"] = cfg.staticDns1;
+    doc["static_dns2"] = cfg.staticDns2;
 
     JsonArray arr = doc["schedule"].to<JsonArray>();
     for (const auto& item : cfg.schedule) {
@@ -528,16 +627,82 @@ bool ConfigManager::setWiFiCredentials(const char* ssid, const char* password) {
     if (!ssid || !_mutex) return false;
     bool ok = false;
     if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
-        strlcpy(_config.wifiSsid, ssid, sizeof(_config.wifiSsid));
-        if (password) {
-            strlcpy(_config.wifiPassword, password, sizeof(_config.wifiPassword));
-        } else {
+        if (strlen(ssid) == 0) {
+            _config.wifiSsid[0] = '\0';
             _config.wifiPassword[0] = '\0';
+        } else {
+            upsertSavedWifiInternal(_config, ssid, password);
         }
         ok = saveToFileInternal(_config);
         xSemaphoreGive(_mutex);
     }
     return ok;
+}
+
+bool ConfigManager::removeSavedWiFi(const char* ssid) {
+    if (!ssid || strlen(ssid) == 0 || !_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        bool removed = false;
+        for (auto it = _config.savedWifiNetworks.begin(); it != _config.savedWifiNetworks.end();) {
+            if (strcmp(it->ssid, ssid) == 0) {
+                it = _config.savedWifiNetworks.erase(it);
+                removed = true;
+            } else {
+                ++it;
+            }
+        }
+        if (removed) {
+            syncPrimaryWifiFromHistory(_config);
+            ok = saveToFileInternal(_config);
+        } else {
+            ok = true;
+        }
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+bool ConfigManager::promoteSavedWiFi(const char* ssid) {
+    if (!ssid || strlen(ssid) == 0 || !_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        int foundIdx = -1;
+        for (size_t i = 0; i < _config.savedWifiNetworks.size(); ++i) {
+            if (strcmp(_config.savedWifiNetworks[i].ssid, ssid) == 0) {
+                foundIdx = static_cast<int>(i);
+                break;
+            }
+        }
+        if (foundIdx > 0) {
+            SavedWifiNetwork promoted = _config.savedWifiNetworks[foundIdx];
+            _config.savedWifiNetworks.erase(_config.savedWifiNetworks.begin() + foundIdx);
+            _config.savedWifiNetworks.insert(_config.savedWifiNetworks.begin(), promoted);
+            syncPrimaryWifiFromHistory(_config);
+            ok = saveToFileInternal(_config);
+        } else if (foundIdx == 0) {
+            ok = true;
+        }
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+bool ConfigManager::getSavedWiFiPassword(const char* ssid, char* outPwd, size_t outSize) {
+    if (!ssid || strlen(ssid) == 0 || !outPwd || outSize == 0 || !_mutex) return false;
+    outPwd[0] = '\0';
+    bool found = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        for (const auto& w : _config.savedWifiNetworks) {
+            if (strcmp(w.ssid, ssid) == 0) {
+                strlcpy(outPwd, w.password, outSize);
+                found = true;
+                break;
+            }
+        }
+        xSemaphoreGive(_mutex);
+    }
+    return found;
 }
 
 bool ConfigManager::setApCredentials(const char* apSsid, const char* apPassword) {
@@ -672,10 +837,41 @@ bool ConfigManager::importConfigJson(const String& jsonStr, String& errorOut) {
 
     SystemConfig newCfg = getConfig();
 
-    if (doc["wifi_ssid"].is<const char*>()) {
-        strlcpy(newCfg.wifiSsid, doc["wifi_ssid"] | "", sizeof(newCfg.wifiSsid));
+    if (doc["wifi_networks"].is<JsonArray>()) {
+        newCfg.savedWifiNetworks.clear();
+        for (JsonObject obj : doc["wifi_networks"].as<JsonArray>()) {
+            if (newCfg.savedWifiNetworks.size() >= MAX_SAVED_WIFI_NETWORKS) break;
+            const char* nSsid = obj["ssid"] | "";
+            const char* nPwd  = obj["password"] | "";
+            if (strlen(nSsid) == 0) continue;
+            bool dup = false;
+            for (const auto& existing : newCfg.savedWifiNetworks) {
+                if (strcmp(existing.ssid, nSsid) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                SavedWifiNetwork item;
+                strlcpy(item.ssid, nSsid, sizeof(item.ssid));
+                strlcpy(item.password, nPwd, sizeof(item.password));
+                newCfg.savedWifiNetworks.push_back(item);
+            }
+        }
+        syncPrimaryWifiFromHistory(newCfg);
     }
-    if (doc["wifi_password"].is<const char*>()) {
+    if (doc["wifi_ssid"].is<const char*>()) {
+        const char* impSsid = doc["wifi_ssid"] | "";
+        const char* impPwd  = doc["wifi_password"].is<const char*>() ? (doc["wifi_password"] | "") : newCfg.wifiPassword;
+        if (strlen(impSsid) > 0) {
+            upsertSavedWifiInternal(newCfg, impSsid, impPwd);
+        } else {
+            newCfg.wifiSsid[0] = '\0';
+            if (doc["wifi_password"].is<const char*>()) {
+                strlcpy(newCfg.wifiPassword, doc["wifi_password"] | "", sizeof(newCfg.wifiPassword));
+            }
+        }
+    } else if (doc["wifi_password"].is<const char*>()) {
         strlcpy(newCfg.wifiPassword, doc["wifi_password"] | "", sizeof(newCfg.wifiPassword));
     }
     if (doc["ap_ssid"].is<const char*>()) {
@@ -720,6 +916,24 @@ bool ConfigManager::importConfigJson(const String& jsonStr, String& errorOut) {
     if (!doc["ap_lock_after_sta"].isNull()) {
         newCfg.apLockAfterSta = doc["ap_lock_after_sta"] | true;
     }
+    if (!doc["static_ip_enabled"].isNull()) {
+        newCfg.staticIpEnabled = doc["static_ip_enabled"] | false;
+    }
+    if (doc["static_ip"].is<const char*>()) {
+        strlcpy(newCfg.staticIp, doc["static_ip"] | "", sizeof(newCfg.staticIp));
+    }
+    if (doc["static_gateway"].is<const char*>()) {
+        strlcpy(newCfg.staticGateway, doc["static_gateway"] | "", sizeof(newCfg.staticGateway));
+    }
+    if (doc["static_subnet"].is<const char*>()) {
+        strlcpy(newCfg.staticSubnet, doc["static_subnet"] | "", sizeof(newCfg.staticSubnet));
+    }
+    if (doc["static_dns1"].is<const char*>()) {
+        strlcpy(newCfg.staticDns1, doc["static_dns1"] | "", sizeof(newCfg.staticDns1));
+    }
+    if (doc["static_dns2"].is<const char*>()) {
+        strlcpy(newCfg.staticDns2, doc["static_dns2"] | "", sizeof(newCfg.staticDns2));
+    }
 
     if (doc["schedule"].is<JsonArray>()) {
         std::vector<BellScheduleItem> parsed;
@@ -760,6 +974,79 @@ bool ConfigManager::setSchoolName(const char* schoolName) {
         xSemaphoreGive(_mutex);
     }
     return ok;
+}
+
+bool ConfigManager::setStaticIpConfig(bool enabled, const char* ip, const char* gateway,
+                                      const char* subnet, const char* dns1, const char* dns2) {
+    if (!_mutex) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        _config.staticIpEnabled = enabled;
+        strlcpy(_config.staticIp, ip ? ip : "", sizeof(_config.staticIp));
+        strlcpy(_config.staticGateway, gateway ? gateway : "", sizeof(_config.staticGateway));
+        strlcpy(_config.staticSubnet, subnet ? subnet : "", sizeof(_config.staticSubnet));
+        strlcpy(_config.staticDns1, dns1 ? dns1 : "", sizeof(_config.staticDns1));
+        strlcpy(_config.staticDns2, dns2 ? dns2 : "", sizeof(_config.staticDns2));
+        ok = saveToFileInternal(_config);
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+bool ConfigManager::saveLastKnownNetInfo(const char* ssid, const char* ip,
+                                         const char* gateway, const char* subnet) {
+    if (!_mutex || !ip || strlen(ip) == 0) return false;
+    bool ok = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        Preferences prefs;
+        if (prefs.begin(NVS_NET_NAMESPACE, false)) {
+            const char* safeSsid = ssid ? ssid : "";
+            const char* safeGw   = gateway ? gateway : "";
+            const char* safeMask = subnet ? subnet : "";
+
+            bool changed =
+                (prefs.getString("last_ssid", "") != safeSsid) ||
+                (prefs.getString("last_ip", "") != ip) ||
+                (prefs.getString("last_gw", "") != safeGw) ||
+                (prefs.getString("last_mask", "") != safeMask);
+
+            if (changed) {
+                prefs.putString("last_ssid", safeSsid);
+                prefs.putString("last_ip", ip);
+                prefs.putString("last_gw", safeGw);
+                prefs.putString("last_mask", safeMask);
+                Serial.printf("[CONFIG] Salvato ultimo IP STA in NVS (%s -> %s, GW: %s)\n",
+                              safeSsid, ip, safeGw);
+            }
+            prefs.end();
+            ok = true;
+        }
+        xSemaphoreGive(_mutex);
+    }
+    return ok;
+}
+
+bool ConfigManager::getLastKnownNetInfo(String& ssidOut, String& ipOut,
+                                        String& gatewayOut, String& subnetOut) {
+    ssidOut = "";
+    ipOut = "";
+    gatewayOut = "";
+    subnetOut = "";
+    if (!_mutex) return false;
+    bool found = false;
+    if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
+        Preferences prefs;
+        if (prefs.begin(NVS_NET_NAMESPACE, true)) {
+            ssidOut    = prefs.getString("last_ssid", "");
+            ipOut      = prefs.getString("last_ip", "");
+            gatewayOut = prefs.getString("last_gw", "");
+            subnetOut  = prefs.getString("last_mask", "");
+            prefs.end();
+            found = ipOut.length() > 0;
+        }
+        xSemaphoreGive(_mutex);
+    }
+    return found;
 }
 
 String ConfigManager::getSchoolName() {

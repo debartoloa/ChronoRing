@@ -36,13 +36,16 @@ All'avvio, il firmware esegue una scansione hardware automatica sul bus I2C (`0x
   - Spegnimento automatico gestito tramite timer hardware ad alta precisione (`esp_timer` one-shot).
   - **Hard Cap di sicurezza a 10 secondi (`10000 ms`)**: impedisce che la campanella resti incastrata o attiva oltre il limite massimo anche in caso di configurazione errata.
 - **🌐 Web Dashboard & Aggiornamento Firmware OTA**
-  - Pannello di controllo responsivo protetto da password amministratore e sistema **Super Password Tecnico di recupero** in NVS (`SHA-256 + salt` iterato con Wizard iniziale una tantum, protezione anti brute-force e area riservata manutentore per reimpostare la password scuola dimenticata), accessibile tramite **`http://chronoring.local`** (mDNS + keepalive IGMP/RFC 6762 ogni 45s), **`http://chronoring`** (NetBIOS su Windows) o IP diretto (mostrabile anche toccando l'header sul display).
+  - Pannello di controllo responsivo protetto da password amministratore e sistema **Super Password Tecnico di recupero** in NVS (`SHA-256 + salt` iterato con Wizard iniziale una tantum, protezione anti brute-force e area riservata manutentore per reimpostare la password scuola dimenticata), accessibile tramite **`http://chronoring.local`** (mDNS + keepalive IGMP/RFC 6762 ogni 45s), **`http://chronoring`** (NetBIOS su Windows) oppure **URL diretto `http://<IP>`** (copiabile con un clic dalla dashboard, salvato automaticamente in NVS per ogni rete e mostrato per `20s` nell'header del display alla connessione, oltre al tocco sull'header).
+  - **IP Statico Opzionale**: possibilità dalla scheda Wi-Fi della dashboard di bloccare i parametri DHCP correnti come IP Statico per evitare cambi indirizzo sulle reti scolastiche.
+  - **Diagnosi Meteo & Internet esplicita**: card dedicata nella Web UI e pannello LVGL sul display con stati di caricamento e diagnosi reale di eventuali blocchi firewall/DNS/timeout sulla rete scolastica.
+  - **Gestione Multi-Rete Wi-Fi (fino a `10` reti salvate)**: memorizzazione delle ultime 10 reti Wi-Fi conosciute con selezione automatica della rete visibile con segnale migliore e gestione rapida dalla Dashboard.
   - Gestione in tempo reale di: *Suona Ora (Test Manuale)*, *Sospensione*, *Tabella Orari*, *Durata Impulso Relè*, *Credenziali Wi-Fi*, *Logo e Nome della Scuola*.
   - **Fallback Access Point automatico con Blocco/Timeout di Sicurezza**: se la rete Wi-Fi configurata non viene rilevata nell'etere (verifica preventiva con pre-scan), ChronoRing avvia l'hotspot **`ChronoRing-Setup`** (SSID e password WPA2 personalizzabili dalla Dashboard) su IP **`192.168.4.1`** con DHCP Server e **Captive Portal** integrato. Una volta connesso alla rete scolastica (`STA`), l'hotspot si spegne totalmente e rimane bloccato per sicurezza (`ap_lock_after_sta`), oltre a spegnersi automaticamente dopo un timeout di inattività configurabile senza client connessi (`15 min` di default).
   - **Backup / Ripristino (`.json`), Factory Reset** e gestione completa di: *Suona Ora*, *Sospensione*, *Tabella Orari con etichette*, *Scansione reti Wi-Fi popup*, *Durata Impulso Relè*, *Logo e Nome della Scuola*.
   - Pagina dedicata **`/update`** per l'aggiornamento del firmware **Over-The-Air (OTA)** direttamente dal browser caricando il file `.bin`.
 - **🎨 Interfaccia Touch LVGL v8 & Standby / Spegnimento Display Configurabile**
-  - Layout scuro ad alto contrasto (`320x240` Landscape) con orologio digitale grande, countdown prossima campanella, widget meteo **Open-Meteo** con icone vettoriali moderne e configurazione Wi-Fi da schermo.
+  - Layout scuro ad alto contrasto (`320x240` Landscape) con orologio digitale grande, countdown prossima campanella, widget meteo **Open-Meteo** con icone vettoriali moderne, configurazione Wi-Fi e pulsante **`RST`** nella barra inferiore per eseguire il **Ripristino di Fabbrica** direttamente dal display touch (protetto da tastierino con **Password Scuola** o **Super Password Tecnico**).
   - **Standby o Spegnimento Display con Timeout Personalizzabile**: dalla Dashboard puoi scegliere la durata del timeout (`10–3600 s`, default `60 s`) e decidere se mostrare la schermata di **Standby** (orologio + Logo e Nome dell'Istituto a luminosità ridotta) oppure **spegnere completamente** la retroilluminazione (`0%`). In entrambi i casi lo schermo si riaccende subito al tocco o su evento campanella/sistema.
 
 ---
@@ -100,7 +103,7 @@ Se hai una scheda **ESP32-S3 vergine** (mai programmata prima) e vuoi installare
 ### 1. Requisiti
 - Un browser desktop con supporto **Web Serial API**: **Google Chrome**, **Microsoft Edge** oppure **Opera**.
 - Un **cavo USB dati** collegato alla porta USB della scheda ESP32-S3.
-- Scarica sul tuo PC il file [`firmware/firmware.bin`](./firmware/firmware.bin) dalla cartella [`firmware/`](./firmware) di questo repository *(nella stessa cartella trovi anche `bootloader.bin` e `partitions.bin` in caso di caricamento manuale avanzato via `esptool`)*.
+- Scarica sul tuo PC il file binario corrispondente alla tua scheda dalla cartella [`firmware/`](./firmware) (es. [`chronoring_freenove_esp32s3_display.bin`](./firmware/chronoring_freenove_esp32s3_display.bin) per la scheda Freenove ESP32-S3, oppure consulta [`firmware/README.md`](./firmware/README.md) per `esp32_classic` e `esp32_c3` — nella stessa cartella trovi anche `bootloader.bin` e `partitions.bin` in caso di caricamento manuale avanzato via `esptool`).
 
 ### 2. Procedura Guidata a 3 Step
 
@@ -111,7 +114,7 @@ Se hai una scheda **ESP32-S3 vergine** (mai programmata prima) e vuoi installare
    - *Nota su schede vergini:* se la scheda non entra automaticamente in modalità programmazione, tieni premuto il tasto **`BOOT`**, premi e rilascia **`RESET`**, poi rilascia **`BOOT`** e riprova la connessione.
 2. **STEP 2 — FIRMWARE:**
    - Seleziona la scheda **"Carica tuo .bin"**.
-   - Seleziona dal tuo PC il file **`firmware.bin`** appena scaricato da [`firmware/`](./firmware).
+   - Seleziona dal tuo PC il file **`.bin`** della tua scheda (es. **`chronoring_freenove_esp32s3_display.bin`**) appena scaricato da [`firmware/`](./firmware).
    - Lascia attiva la spunta **"Aggiungi automaticamente `bootloader.bin`, `partitions.bin` e `boot_app0.bin` per primo flash (offset `0x10000`)"**: in questo modo lo strumento comporrà in automatico l'intera mappa di memoria necessaria al primo avvio:
 
      | Indirizzo Flash | File Caricato | Descrizione |
@@ -119,7 +122,7 @@ Se hai una scheda **ESP32-S3 vergine** (mai programmata prima) e vuoi installare
      | `0x0000` | `bootloader.bin` | Bootloader ESP32-S3 *(aggiunto in automatico)* |
      | `0x8000` | `partitions.bin` | Tabella partizioni Dual-OTA *(aggiunta in automatico)* |
      | `0xE000` | `boot_app0.bin` | Selettore partizione OTA *(aggiunto in automatico)* |
-     | `0x10000` | **`firmware.bin`** | Firmware applicativo **ChronoRing** |
+     | `0x10000` | **`chronoring_freenove_esp32s3_display.bin`** *(o target scelto)* | Firmware applicativo **ChronoRing** |
 
 3. **STEP 3 — FLASH:**
    - Lascia attiva l'opzione **"Cancella memoria e installa da zero (consigliato al primo flash)"**.
@@ -127,7 +130,7 @@ Se hai una scheda **ESP32-S3 vergine** (mai programmata prima) e vuoi installare
 
 ### 3. Primo Avvio & Aggiornamenti Futuri (OTA)
 - Al primo avvio, non essendo presente alcuna rete Wi-Fi configurata, ChronoRing attiverà l'hotspot **`ChronoRing-Setup`** su **`http://192.168.4.1`** per la configurazione guidata.
-- Per tutti gli **aggiornamenti successivi**, non servirà più collegare il cavo USB: basterà aprire la pagina **`http://chronoring.local/update`** dalla Dashboard Web e caricare direttamente il solo file **`firmware.bin`**.
+- Per tutti gli **aggiornamenti successivi**, non servirà più collegare il cavo USB: basterà aprire la pagina **`http://<IP_DISPOSITIVO>/update`** (o `http://chronoring.local/update`) dalla Dashboard Web e caricare direttamente il file `.bin` della propria scheda.
 
 ---
 
@@ -164,9 +167,13 @@ Esp32-Campanella/
 ├── docs/
 │   └── chronoring_logo.jpg          # Logo ufficiale ChronoRing
 ├── firmware/                        # Binari precompilati pronti per il flash / OTA
+│   ├── README.md                    # Tabella binari, pin relè e guida OTA per scheda
 │   ├── bootloader.bin
-│   ├── firmware.bin
+│   ├── chronoring_esp32_classic_headless.bin
+│   ├── chronoring_esp32c3_headless.bin
+│   ├── chronoring_freenove_esp32s3_display.bin
 │   └── partitions.bin
+├── export_firmwares.py              # Script PlatformIO post-build export in firmware/
 ├── hardware/
 │   └── enclosure/                   # Case 3D per Freenove ESP32-S3 Display 2.8"
 │       ├── cad/                     # File sorgenti CAD modificabili (.f3d Fusion 360)

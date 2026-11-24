@@ -1,5 +1,6 @@
 #include "web_server_handler.h"
 #include "network_manager.h"
+#include "weather_service.h"
 #include "../hardware_pins.h"
 #include "../config_manager.h"
 #include "../relay_controller.h"
@@ -217,6 +218,14 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     <div class="stat-row"><span>Modalità Operativa:</span><strong id="hwMode">--</strong></div>
     <div class="stat-row"><span>Versione Firmware:</span><strong id="fwVer" style="color:var(--cyan)">v)rawliteral" CHRONORING_FW_VERSION R"rawliteral(</strong></div>
     <div class="stat-row"><span>Indirizzo IP / mDNS:</span><strong id="ipAddr">chronoring.local</strong></div>
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:14px 0 12px;">
+    <div class="form-group">
+      <label>Modifica Password Web Amministratore</label>
+      <div style="display:flex;gap:8px;">
+        <input type="password" id="newWebPwd" placeholder="Nuova password...">
+        <button class="btn btn-outline" onclick="savePassword()">Aggiorna</button>
+      </div>
+    </div>
   </div>
 
   <!-- COMANDI RAPIDI & SOSPENSIONE -->
@@ -238,27 +247,41 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         <span class="slider danger-slider"></span>
       </label>
     </div>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:16px 0 14px;">
+    <div class="form-group">
+      <label>Durata Impulso Relè (ms) — [Min: 200 ms | Hard Cap Max: 10000 ms]</label>
+      <div style="display:flex;gap:8px;">
+        <input type="number" id="pulseMs" min="200" max="10000" step="100" value="3000">
+        <button class="btn btn-cyan" onclick="savePulse()">Salva</button>
+      </div>
+    </div>
   </div>
 
-  <!-- DURATA SQUILLO E SICUREZZA -->
+  <!-- STATO METEO & CONNETTIVITA INTERNET -->
   <div class="card">
-    <h2><span>⚙️ Durata Squillo &amp; Password</span></h2>
-    <div class="form-grid">
-      <div class="form-group">
-        <label>Durata Impulso Relè (ms) — [Min: 200 ms | Hard Cap Max: 10000 ms]</label>
-        <div style="display:flex;gap:8px;">
-          <input type="number" id="pulseMs" min="200" max="10000" step="100" value="3000">
-          <button class="btn btn-cyan" onclick="savePulse()">Salva</button>
-        </div>
+    <h2>
+      <span>🌤️ Stato Meteo &amp; Internet</span>
+      <span id="weatherBadge" class="badge badge-warn">In attesa...</span>
+    </h2>
+    <div id="weatherPanel" style="padding:12px;border-radius:10px;background:#071022;border:1px solid rgba(255,255,255,0.08);margin-bottom:12px;">
+      <div id="weatherMainText" style="font-size:1.02rem;font-weight:700;color:#fff;">Recupero dati meteo in corso...</div>
+      <div id="weatherDetailText" style="font-size:0.84rem;color:var(--muted);margin-top:6px;">Verifica connessione e API Open-Meteo...</div>
+    </div>
+    <div class="stat-row"><span>Stato Servizio:</span><strong id="weatherStateCode">--</strong></div>
+    <div class="stat-row"><span>Ultimo Aggiornamento Riuscito:</span><strong id="weatherLastOk">Mai</strong></div>
+    <div class="stat-row"><span>Ultima Verifica:</span><strong id="weatherLastTry">--</strong></div>
+    <div style="margin-top:12px;">
+      <button type="button" id="btnWeatherRefresh" class="btn btn-outline" style="width:100%;justify-content:center;" onclick="refreshWeatherNow()">🔄 Aggiorna / Riprova Meteo</button>
+    </div>
+    <div style="margin-top:14px;padding:12px;border-radius:10px;background:#071426;border:1px solid rgba(0,212,255,0.35);">
+      <div style="font-size:0.76rem;color:var(--cyan);text-transform:uppercase;letter-spacing:0.6px;font-weight:700;margin-bottom:6px;">URL Diretto senza mDNS (.local)</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <strong id="directIpUrl" style="font-size:1.05rem;color:#fff;font-family:monospace;">http://--</strong>
+        <button type="button" class="btn btn-cyan" style="padding:6px 12px;font-size:0.8rem;" onclick="copyDirectIpUrl()">📋 Copia URL diretto</button>
       </div>
-      <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:4px 0;">
-      <div class="form-group">
-        <label>Modifica Password Web Amministratore</label>
-        <div style="display:flex;gap:8px;">
-          <input type="password" id="newWebPwd" placeholder="Nuova password...">
-          <button class="btn btn-outline" onclick="savePassword()">Aggiorna</button>
-        </div>
-      </div>
+      <div id="lastSavedIpRow" style="font-size:0.78rem;color:var(--muted);margin-top:6px;">Ultimo IP salvato in memoria: --</div>
+      <div style="font-size:0.76rem;color:#fde68a;margin-top:4px;">Nota: se <code>chronoring.local</code> &egrave; bloccato dalla rete scolastica, usa sempre l'indirizzo IP diretto qui sopra.</div>
     </div>
   </div>
 
@@ -358,6 +381,53 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         <button class="btn btn-cyan" style="width:100%;justify-content:center;padding:10px 15px;" onclick="saveWiFi()">💾 Salva e Connetti Wi-Fi</button>
       </div>
     </div>
+
+    <div style="margin-top:14px;">
+      <div style="font-size:0.8rem;color:var(--muted);margin-bottom:6px;">Reti Wi-Fi salvate (max 10 — clicca per collegarti):</div>
+      <div id="savedWifiList" style="display:flex;flex-wrap:wrap;gap:8px;">
+        <span style="font-size:0.8rem;color:var(--muted);">Nessuna rete salvata</span>
+      </div>
+    </div>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:16px 0;">
+    <div class="toggle-row" style="margin-bottom:12px;">
+      <div>
+        <strong>Configurazione IP Statico (opzionale)</strong>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:2px;">Fissa l'indirizzo IP della scheda sulla rete scolastica invece del DHCP dinamico</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="chkStaticIp" onchange="toggleStaticIpFields(this.checked)">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="staticIpFields" style="display:none;margin-bottom:12px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;">
+        <div class="form-group">
+          <label>Indirizzo IP Statico</label>
+          <input type="text" id="staticIp" placeholder="Es. 192.168.1.50">
+        </div>
+        <div class="form-group">
+          <label>Gateway</label>
+          <input type="text" id="staticGw" placeholder="Es. 192.168.1.1">
+        </div>
+        <div class="form-group">
+          <label>Subnet Mask</label>
+          <input type="text" id="staticMask" placeholder="255.255.255.0">
+        </div>
+        <div class="form-group">
+          <label>DNS Primario</label>
+          <input type="text" id="staticDns1" placeholder="Es. 8.8.8.8">
+        </div>
+        <div class="form-group">
+          <label>DNS Secondario (opz.)</label>
+          <input type="text" id="staticDns2" placeholder="Es. 1.1.1.1">
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <button type="button" class="btn btn-outline" onclick="prefillStaticFromDhcp()">📥 Precompila con DHCP attuale</button>
+      </div>
+    </div>
+    <button type="button" class="btn btn-cyan" id="btnSaveStaticIp" onclick="saveStaticIp()">💾 Salva Configurazione IP</button>
   </div>
 
   <!-- SICUREZZA HOTSPOT AP, BACKUP & RIPRISTINO -->
@@ -526,9 +596,141 @@ async function fetchStatus() {
     }
     document.getElementById('netInfo').textContent = d.net_mode;
     document.getElementById('ipAddr').textContent = d.ip + ' (chronoring.local)';
+    const dirEl = document.getElementById('directIpUrl');
+    if (dirEl) dirEl.textContent = d.ip ? ('http://' + d.ip) : 'http://--';
+    const lastRow = document.getElementById('lastSavedIpRow');
+    if (lastRow) {
+      lastRow.textContent = d.last_ip
+        ? ('Ultimo IP salvato in memoria: http://' + d.last_ip + (d.last_ssid ? (' (' + d.last_ssid + ')') : ''))
+        : 'Ultimo IP salvato in memoria: nessun dato';
+    }
+    window._currentNetDhcp = {
+      ip: d.ip || '',
+      gateway: d.gateway || '',
+      subnet: d.subnet || '',
+      dns1: d.dns1 || '',
+      dns2: d.dns2 || ''
+    };
+    if (d.weather) renderWeatherStatus(d.weather);
     document.getElementById('chkSuspended').checked = d.suspended;
     applyRoleUi(d.role);
   } catch (e) {}
+}
+
+function fmtAgeSec(sec) {
+  if (sec === undefined || sec === null || sec < 0) return 'Mai';
+  if (sec < 5) return 'Adesso';
+  if (sec < 60) return sec + 's fa';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's fa';
+  return Math.floor(sec / 3600) + 'h fa';
+}
+
+function renderWeatherStatus(w) {
+  const badge = document.getElementById('weatherBadge');
+  const mainEl = document.getElementById('weatherMainText');
+  const detEl = document.getElementById('weatherDetailText');
+  const stateEl = document.getElementById('weatherStateCode');
+  const okEl = document.getElementById('weatherLastOk');
+  const tryEl = document.getElementById('weatherLastTry');
+  const btn = document.getElementById('btnWeatherRefresh');
+  if (!badge || !mainEl || !detEl) return;
+
+  const st = String(w.state || 'idle').toUpperCase();
+  const errCode = String(w.error_code || 'none').toUpperCase();
+  if (stateEl) stateEl.textContent = st + (errCode && errCode !== 'NONE' ? (' (' + errCode + ')') : '');
+  if (okEl) okEl.textContent = fmtAgeSec(w.last_ok_age_s);
+  if (tryEl) tryEl.textContent = fmtAgeSec(w.last_try_age_s);
+
+  if (st === 'LOADING') {
+    badge.textContent = 'IN CORSO...';
+    badge.className = 'badge badge-warn';
+    mainEl.style.color = '#38bdf8';
+    mainEl.textContent = '⏳ Recupero dati meteo in corso...';
+    detEl.textContent = 'Connessione DNS/HTTPS verso api.open-meteo.com in corso...';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Verifica in corso...'; }
+  } else if (st === 'SUCCESS') {
+    badge.textContent = 'ONLINE';
+    badge.className = 'badge badge-ok';
+    mainEl.style.color = '#34d399';
+    mainEl.textContent = (w.temp !== undefined ? w.temp.toFixed(1) + ' °C' : '--') +
+      (w.condition ? (' — ' + w.condition) : '') +
+      ' | Umidità ' + (w.humidity !== undefined ? w.humidity + '%' : '--') +
+      ' | Vento ' + (w.wind !== undefined ? w.wind.toFixed(1) + ' km/h' : '--');
+    detEl.textContent = 'Dati Open-Meteo aggiornati e validi. Accesso Internet attivo.';
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Aggiorna Meteo Ora'; }
+  } else if (st === 'ERROR') {
+    badge.textContent = 'ERRORE';
+    badge.className = 'badge badge-err';
+    mainEl.style.color = '#fca5a5';
+    mainEl.textContent = '❌ ' + (w.error_short || 'Errore meteo');
+    detEl.textContent = (w.error_detail || 'Verifica connessione Internet e firewall di rete.') +
+      (w.http_code ? (' [HTTP ' + w.http_code + ']') : '');
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Riprova Verifica Meteo'; }
+  } else {
+    badge.textContent = 'IN ATTESA';
+    badge.className = 'badge badge-warn';
+    mainEl.style.color = '#e2e8f0';
+    mainEl.textContent = 'In attesa della prima verifica meteo...';
+    detEl.textContent = 'Il controllo partirà automaticamente appena il Wi-Fi STA è connesso.';
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Aggiorna / Riprova Meteo'; }
+  }
+}
+
+function copyDirectIpUrl() {
+  const txt = document.getElementById('directIpUrl').textContent.trim();
+  if (!txt || txt === 'http://--') {
+    showToast('Indirizzo IP non ancora disponibile.', true);
+    return;
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(txt).then(() => showToast('URL copiato: ' + txt)).catch(() => fallbackCopyText(txt));
+  } else {
+    fallbackCopyText(txt);
+  }
+}
+
+function fallbackCopyText(txt) {
+  const ta = document.createElement('textarea');
+  ta.value = txt;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast('URL copiato: ' + txt);
+  } catch (e) {
+    showToast('Copia manuale richiesta: ' + txt, true);
+  }
+  document.body.removeChild(ta);
+}
+
+async function refreshWeatherNow() {
+  const btn = document.getElementById('btnWeatherRefresh');
+  const mainEl = document.getElementById('weatherMainText');
+  const detEl = document.getElementById('weatherDetailText');
+  const badge = document.getElementById('weatherBadge');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Verifica in corso...'; }
+  if (badge) { badge.textContent = 'IN CORSO...'; badge.className = 'badge badge-warn'; }
+  if (mainEl) { mainEl.style.color = '#38bdf8'; mainEl.textContent = '⏳ Recupero dati meteo in corso...'; }
+  if (detEl) detEl.textContent = 'Richiesta manuale inviata al dispositivo...';
+  try {
+    const r = await fetch('/api/weather-refresh', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Aggiorna / Riprova Meteo'; }
+      showToast(d.message || 'Errore avvio verifica meteo', true);
+      return;
+    }
+    showToast(d.message || 'Verifica meteo avviata');
+    setTimeout(fetchStatus, 800);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Aggiorna / Riprova Meteo'; }
+    if (badge) { badge.textContent = 'ERRORE'; badge.className = 'badge badge-err'; }
+    if (mainEl) { mainEl.style.color = '#fca5a5'; mainEl.textContent = '❌ Errore comunicazione con ChronoRing'; }
+    showToast('Errore di rete durante il contatto con la scheda.', true);
+  }
 }
 
 function applyRoleUi(role) {
@@ -547,6 +749,14 @@ async function loadConfig() {
   document.getElementById('chkSuspended').checked = d.suspended;
   document.getElementById('pulseMs').value = d.relay_pulse_ms;
   document.getElementById('wifiSsid').value = d.wifi_ssid || '';
+  renderSavedWifiList(d.wifi_networks || [], d.wifi_ssid || '');
+  document.getElementById('chkStaticIp').checked = !!d.static_ip_enabled;
+  document.getElementById('staticIp').value = d.static_ip || '';
+  document.getElementById('staticGw').value = d.static_gateway || '';
+  document.getElementById('staticMask').value = d.static_subnet || '';
+  document.getElementById('staticDns1').value = d.static_dns1 || '';
+  document.getElementById('staticDns2').value = d.static_dns2 || '';
+  toggleStaticIpFields(!!d.static_ip_enabled);
   document.getElementById('apSsid').value = d.ap_ssid || 'ChronoRing-Setup';
   document.getElementById('chkDisplaySleepOff').checked = !!d.display_sleep_off;
   document.getElementById('displayTimeoutSec').value = d.display_timeout_sec || 60;
@@ -963,6 +1173,64 @@ async function startWifiScan(attempt = 0) {
   }
 }
 
+function renderSavedWifiList(list, activeSsid) {
+  const wrap = document.getElementById('savedWifiList');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!list || list.length === 0) {
+    const empty = document.createElement('span');
+    empty.style.cssText = 'font-size:0.8rem;color:var(--muted);';
+    empty.textContent = 'Nessuna rete salvata';
+    wrap.appendChild(empty);
+    return;
+  }
+  list.forEach((n) => {
+    const chip = document.createElement('div');
+    const isAct = (n.ssid === activeSsid);
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:#071426;border:1px solid ' +
+      (isAct ? 'var(--cyan)' : 'rgba(255,255,255,0.14)') + ';font-size:0.82rem;';
+    const btnConn = document.createElement('button');
+    btnConn.type = 'button';
+    btnConn.style.cssText = 'background:none;border:none;color:' + (isAct ? 'var(--cyan)' : '#e2e8f0') + ';cursor:pointer;font-weight:600;padding:0;';
+    btnConn.textContent = (n.has_password ? '🔒 ' : '🔓 ') + n.ssid + (isAct ? ' ★' : '');
+    btnConn.title = 'Connetti a ' + n.ssid;
+    btnConn.onclick = () => connectSavedWifi(n.ssid);
+    const btnDel = document.createElement('button');
+    btnDel.type = 'button';
+    btnDel.style.cssText = 'background:none;border:none;color:#fca5a5;cursor:pointer;font-weight:700;padding:0 2px;font-size:0.85rem;';
+    btnDel.textContent = '✕';
+    btnDel.title = 'Rimuovi rete salvata';
+    btnDel.onclick = () => deleteSavedWifi(n.ssid);
+    chip.appendChild(btnConn);
+    chip.appendChild(btnDel);
+    wrap.appendChild(chip);
+  });
+}
+
+async function connectSavedWifi(ssid) {
+  document.getElementById('wifiSsid').value = ssid;
+  document.getElementById('wifiPwd').value = '';
+  const r = await fetch('/api/wifi', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ssid, password: ''})
+  });
+  const d = await r.json().catch(() => ({}));
+  showToast(d.message || 'Cambio rete avviato', !r.ok);
+  if (r.ok) loadConfig();
+}
+
+async function deleteSavedWifi(ssid) {
+  const r = await fetch('/api/wifi-delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ssid})
+  });
+  const d = await r.json().catch(() => ({}));
+  showToast(d.message || 'Rete rimossa', !r.ok);
+  if (r.ok) loadConfig();
+}
+
 async function saveWiFi() {
   const ssid = document.getElementById('wifiSsid').value.trim();
   const pwd = document.getElementById('wifiPwd').value;
@@ -973,6 +1241,57 @@ async function saveWiFi() {
   });
   const d = await r.json();
   showToast(d.message, !r.ok);
+  if (r.ok) loadConfig();
+}
+
+function toggleStaticIpFields(enabled) {
+  const box = document.getElementById('staticIpFields');
+  if (box) box.style.display = enabled ? 'block' : 'none';
+}
+
+function prefillStaticFromDhcp() {
+  const cur = window._currentNetDhcp || {};
+  if (!cur.ip || cur.ip === '0.0.0.0' || !cur.gateway) {
+    showToast('Dati DHCP STA non disponibili: collegati prima al Wi-Fi scolastico.', true);
+    return;
+  }
+  document.getElementById('staticIp').value = cur.ip;
+  document.getElementById('staticGw').value = cur.gateway;
+  document.getElementById('staticMask').value = cur.subnet || '255.255.255.0';
+  document.getElementById('staticDns1').value = cur.dns1 || cur.gateway;
+  document.getElementById('staticDns2').value = cur.dns2 || '8.8.8.8';
+  showToast('Parametri DHCP copiati! Premi "Salva Configurazione IP" per fissarli.');
+}
+
+async function saveStaticIp() {
+  const enabled = document.getElementById('chkStaticIp').checked;
+  const payload = {
+    enabled,
+    ip: document.getElementById('staticIp').value.trim(),
+    gateway: document.getElementById('staticGw').value.trim(),
+    subnet: document.getElementById('staticMask').value.trim(),
+    dns1: document.getElementById('staticDns1').value.trim(),
+    dns2: document.getElementById('staticDns2').value.trim()
+  };
+  if (enabled && (!payload.ip || !payload.gateway || !payload.subnet)) {
+    showToast('Compila almeno IP Statico, Gateway e Subnet Mask.', true);
+    return;
+  }
+  const btn = document.getElementById('btnSaveStaticIp');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/static-ip', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json().catch(() => ({}));
+    showToast(d.message || 'Configurazione IP salvata', !r.ok);
+  } catch (e) {
+    showToast('Errore di rete durante il salvataggio IP.', true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function saveApConfig() {
@@ -1600,7 +1919,34 @@ void WebServerHandler::setupRoutes() {
         doc["suspended"] = ConfigManager::isSuspended();
         doc["net_mode"] = NetworkManager::getNetworkModeString();
         doc["ip"] = NetworkManager::getIpAddress();
+        doc["gateway"] = NetworkManager::getGatewayIp();
+        doc["subnet"] = NetworkManager::getSubnetMask();
+        doc["dns1"] = NetworkManager::getDns1Ip();
+        doc["dns2"] = NetworkManager::getDns2Ip();
         doc["rssi"] = NetworkManager::getRssi();
+
+        String lastSsid, lastIp, lastGw, lastMask;
+        ConfigManager::getLastKnownNetInfo(lastSsid, lastIp, lastGw, lastMask);
+        doc["last_ssid"] = lastSsid;
+        doc["last_ip"] = lastIp;
+
+        WeatherData wd = WeatherService::getWeatherData();
+        JsonObject wObj = doc["weather"].to<JsonObject>();
+        wObj["state"] = WeatherService::stateToString(wd.state);
+        wObj["error_code"] = WeatherService::errorToCode(wd.error);
+        wObj["http_code"] = wd.httpCode;
+        wObj["error_short"] = wd.errorShort;
+        wObj["error_detail"] = wd.errorDetail;
+        wObj["valid"] = wd.valid;
+        if (wd.valid) {
+            wObj["temp"] = wd.temperatureC;
+            wObj["humidity"] = wd.humidityPct;
+            wObj["wind"] = wd.windSpeedKmh;
+            wObj["condition"] = wd.conditionText;
+        }
+        uint32_t nowMs = millis();
+        wObj["last_ok_age_s"] = (wd.lastUpdateMs > 0) ? (int32_t)((nowMs - wd.lastUpdateMs) / 1000UL) : -1;
+        wObj["last_try_age_s"] = (wd.lastAttemptMs > 0) ? (int32_t)((nowMs - wd.lastAttemptMs) / 1000UL) : -1;
 
         String out;
         serializeJson(doc, out);
@@ -1617,6 +1963,19 @@ void WebServerHandler::setupRoutes() {
         JsonDocument doc;
         doc["role"] = isSuperAdmin(request) ? "superadmin" : "admin";
         doc["wifi_ssid"] = cfg.wifiSsid;
+        JsonArray wifiArr = doc["wifi_networks"].to<JsonArray>();
+        for (const auto& w : cfg.savedWifiNetworks) {
+            if (strlen(w.ssid) == 0) continue;
+            JsonObject wObj = wifiArr.add<JsonObject>();
+            wObj["ssid"] = w.ssid;
+            wObj["has_password"] = (strlen(w.password) > 0);
+        }
+        doc["static_ip_enabled"] = cfg.staticIpEnabled;
+        doc["static_ip"] = cfg.staticIp;
+        doc["static_gateway"] = cfg.staticGateway;
+        doc["static_subnet"] = cfg.staticSubnet;
+        doc["static_dns1"] = cfg.staticDns1;
+        doc["static_dns2"] = cfg.staticDns2;
         doc["ap_ssid"] = (strlen(cfg.apSsid) > 0) ? cfg.apSsid : ConfigManager::DEFAULT_AP_SSID;
         doc["ap_has_password"] = (strlen(cfg.apPassword) >= 8);
         doc["school_name"] = cfg.schoolName;
@@ -1963,14 +2322,113 @@ void WebServerHandler::setupRoutes() {
             const char* ssid = doc["ssid"] | "";
             const char* pwd  = doc["password"] | "";
 
-            SystemConfig current = ConfigManager::getConfig();
-            const char* finalPwd = (strlen(pwd) > 0) ? pwd : current.wifiPassword;
+            char savedPwdBuf[65] = {0};
+            const char* finalPwd = pwd;
+            if (strlen(pwd) == 0 && strlen(ssid) > 0) {
+                if (ConfigManager::getSavedWiFiPassword(ssid, savedPwdBuf, sizeof(savedPwdBuf))) {
+                    finalPwd = savedPwdBuf;
+                }
+            }
 
             if (ConfigManager::setWiFiCredentials(ssid, finalPwd)) {
                 NetworkManager::requestReconnect();
                 request->send(200, "application/json", "{\"message\":\"Credenziali Wi-Fi salvate. Riconnessione in corso...\"}");
             } else {
                 request->send(500, "application/json", "{\"message\":\"Errore salvataggio Wi-Fi\"}");
+            }
+        }
+    );
+
+    // 15d. API RIMOZIONE RETE WI-FI SALVATA (POST /api/wifi-delete)
+    _server.on("/api/wifi-delete", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isAuthenticated(request)) {
+                request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+                return;
+            }
+            if (index != 0 || len != total || total > 512) {
+                request->send(400, "application/json", "{\"message\":\"Payload non valido\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            const char* ssid = doc["ssid"] | "";
+            if (strlen(ssid) == 0) {
+                request->send(400, "application/json", "{\"message\":\"SSID non valido\"}");
+                return;
+            }
+            if (ConfigManager::removeSavedWiFi(ssid)) {
+                request->send(200, "application/json", "{\"message\":\"Rete Wi-Fi rimossa dalla cronologia!\"}");
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore rimozione rete Wi-Fi\"}");
+            }
+        }
+    );
+
+    // 15b. API AGGIORNAMENTO IMMEDIATO METEO (POST /api/weather-refresh)
+    _server.on("/api/weather-refresh", HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (!isAuthenticated(request)) {
+            request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+            return;
+        }
+        WeatherService::requestImmediateUpdate();
+        request->send(200, "application/json", "{\"message\":\"Verifica meteo avviata!\"}");
+    });
+
+    // 15c. API CONFIGURAZIONE IP STATICO / DHCP (POST /api/static-ip)
+    _server.on("/api/static-ip", HTTP_POST,
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (!isAuthenticated(request)) {
+                request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+                return;
+            }
+            if (index != 0 || len != total || total > 1024) {
+                request->send(400, "application/json", "{\"message\":\"Payload non valido\"}");
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"message\":\"JSON non valido\"}");
+                return;
+            }
+            bool enabled = doc["enabled"] | false;
+            const char* ip = doc["ip"] | "";
+            const char* gw = doc["gateway"] | "";
+            const char* mask = doc["subnet"] | "";
+            const char* dns1 = doc["dns1"] | "";
+            const char* dns2 = doc["dns2"] | "";
+
+            if (enabled) {
+                IPAddress aIp, aGw, aMask, aD1, aD2;
+                if (!aIp.fromString(ip) || !aGw.fromString(gw) || !aMask.fromString(mask)) {
+                    request->send(400, "application/json",
+                                  "{\"message\":\"Indirizzo IP, Gateway o Subnet Mask non validi (es. 192.168.1.50).\"}");
+                    return;
+                }
+                if (strlen(dns1) > 0 && !aD1.fromString(dns1)) {
+                    request->send(400, "application/json", "{\"message\":\"DNS Primario non valido.\"}");
+                    return;
+                }
+                if (strlen(dns2) > 0 && !aD2.fromString(dns2)) {
+                    request->send(400, "application/json", "{\"message\":\"DNS Secondario non valido.\"}");
+                    return;
+                }
+            }
+
+            if (ConfigManager::setStaticIpConfig(enabled, ip, gw, mask, dns1, dns2)) {
+                NetworkManager::requestReconnect();
+                request->send(200, "application/json",
+                              enabled ? "{\"message\":\"✅ IP Statico salvato! Riconnessione rete in corso...\"}"
+                                      : "{\"message\":\"✅ Modalità DHCP ripristinata! Riconnessione in corso...\"}");
+            } else {
+                request->send(500, "application/json", "{\"message\":\"Errore salvataggio configurazione IP.\"}");
             }
         }
     );

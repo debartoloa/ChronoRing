@@ -48,9 +48,18 @@ lv_obj_t* GuiManager::_lblWeatherWind    = nullptr;
 lv_obj_t* GuiManager::_btnRingNow        = nullptr;
 lv_obj_t* GuiManager::_btnSuspend        = nullptr;
 lv_obj_t* GuiManager::_lblBtnSuspend     = nullptr;
+lv_obj_t* GuiManager::_btnReset          = nullptr;
 lv_obj_t* GuiManager::_relayIndicatorBox = nullptr;
 lv_obj_t* GuiManager::_relayLedDot       = nullptr;
 lv_obj_t* GuiManager::_lblRelayState     = nullptr;
+
+lv_obj_t* GuiManager::_resetModal        = nullptr;
+lv_obj_t* GuiManager::_taResetPwd        = nullptr;
+lv_obj_t* GuiManager::_lblResetMsg       = nullptr;
+lv_obj_t* GuiManager::_btnResetEye       = nullptr;
+lv_obj_t* GuiManager::_kbReset           = nullptr;
+uint8_t   GuiManager::_resetFailedAttempts = 0;
+uint32_t  GuiManager::_resetLockUntilMs  = 0;
 
 lv_obj_t* GuiManager::_standbyOverlay    = nullptr;
 lv_obj_t* GuiManager::_imgStandbyLogo    = nullptr;
@@ -119,6 +128,16 @@ void GuiManager::requestDisplaySettingsReload() {
         return;
     }
     _displaySettingsDirty = true;
+}
+
+void GuiManager::notifyIpAcquired() {
+    if (!g_has_display) {
+        return;
+    }
+    uint32_t now = millis();
+    _showIpUntilMs = now + 20000UL;
+    if (_showIpUntilMs == 0) _showIpUntilMs = 1;
+    _headerIpDirty = true;
 }
 
 bool GuiManager::begin() {
@@ -292,6 +311,9 @@ void GuiManager::applyStandbyModeVisuals() {
 
 void GuiManager::enterStandby() {
     if (!g_has_display || _inStandby || !_standbyOverlay) return;
+    if (_resetModal && !lv_obj_has_flag(_resetModal, LV_OBJ_FLAG_HIDDEN)) {
+        closeResetModal();
+    }
     _inStandby = true;
     lv_obj_clear_flag(_standbyOverlay, LV_OBJ_FLAG_HIDDEN);
     applyStandbyModeVisuals();
@@ -523,18 +545,27 @@ void GuiManager::buildUi() {
     renderModernWeatherIcon(-1);
 
     _lblWeatherTemp = lv_label_create(rightQuad);
+    lv_obj_set_width(_lblWeatherTemp, 120);
+    lv_obj_set_style_text_align(_lblWeatherTemp, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(_lblWeatherTemp, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_lblWeatherTemp, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(_lblWeatherTemp, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(_lblWeatherTemp, "--.- \xC2\xB0" "C");
     lv_obj_align(_lblWeatherTemp, LV_ALIGN_TOP_MID, 0, 48);
 
     _lblWeatherHum = lv_label_create(rightQuad);
+    lv_obj_set_width(_lblWeatherHum, 120);
+    lv_obj_set_style_text_align(_lblWeatherHum, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(_lblWeatherHum, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_lblWeatherHum, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(_lblWeatherHum, lv_color_hex(0x94A3B8), 0);
     lv_label_set_text(_lblWeatherHum, "Umidita: --%");
     lv_obj_align(_lblWeatherHum, LV_ALIGN_BOTTOM_MID, 0, -20);
 
     _lblWeatherWind = lv_label_create(rightQuad);
+    lv_obj_set_width(_lblWeatherWind, 120);
+    lv_obj_set_style_text_align(_lblWeatherWind, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(_lblWeatherWind, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_lblWeatherWind, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(_lblWeatherWind, lv_color_hex(0x94A3B8), 0);
     lv_label_set_text(_lblWeatherWind, "Vento: -- km/h");
@@ -542,7 +573,7 @@ void GuiManager::buildUi() {
 
     // 4. FOOTER INFERIORE (Touch Bar)
     _btnRingNow = lv_btn_create(_screenFrame);
-    lv_obj_set_size(_btnRingNow, 118, 44);
+    lv_obj_set_size(_btnRingNow, 96, 44);
     lv_obj_set_pos(_btnRingNow, 6, 188);
     lv_obj_set_style_bg_color(_btnRingNow, lv_color_hex(0x0284C7), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(_btnRingNow, lv_color_hex(0xF59E0B), LV_PART_MAIN | LV_STATE_PRESSED);
@@ -553,12 +584,12 @@ void GuiManager::buildUi() {
     lv_obj_t* lblRing = lv_label_create(_btnRingNow);
     lv_obj_set_style_text_font(lblRing, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lblRing, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(lblRing, LV_SYMBOL_BELL " SUONA ORA");
+    lv_label_set_text(lblRing, LV_SYMBOL_BELL " SUONA");
     lv_obj_center(lblRing);
 
     _btnSuspend = lv_btn_create(_screenFrame);
-    lv_obj_set_size(_btnSuspend, 122, 44);
-    lv_obj_set_pos(_btnSuspend, 128, 188);
+    lv_obj_set_size(_btnSuspend, 102, 44);
+    lv_obj_set_pos(_btnSuspend, 106, 188);
     lv_obj_set_style_radius(_btnSuspend, 8, 0);
     lv_obj_set_style_shadow_width(_btnSuspend, 0, 0);
     lv_obj_add_event_cb(_btnSuspend, GuiManager::onSuspendToggleClicked, LV_EVENT_CLICKED, nullptr);
@@ -568,9 +599,27 @@ void GuiManager::buildUi() {
     lv_obj_set_style_text_color(_lblBtnSuspend, lv_color_hex(0xFFFFFF), 0);
     lv_obj_center(_lblBtnSuspend);
 
+    _btnReset = lv_btn_create(_screenFrame);
+    lv_obj_set_size(_btnReset, 44, 44);
+    lv_obj_set_pos(_btnReset, 212, 188);
+    lv_obj_set_style_bg_color(_btnReset, lv_color_hex(0x7F1D1D), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(_btnReset, lv_color_hex(0xDC2626), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(_btnReset, lv_color_hex(0xEF4444), 0);
+    lv_obj_set_style_border_width(_btnReset, 1, 0);
+    lv_obj_set_style_radius(_btnReset, 8, 0);
+    lv_obj_set_style_shadow_width(_btnReset, 0, 0);
+    lv_obj_add_event_cb(_btnReset, GuiManager::onResetBtnClicked, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* lblRst = lv_label_create(_btnReset);
+    lv_obj_set_style_text_font(lblRst, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(lblRst, lv_color_hex(0xFEE2E2), 0);
+    lv_obj_set_style_text_align(lblRst, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(lblRst, LV_SYMBOL_REFRESH "\nRST");
+    lv_obj_center(lblRst);
+
     _relayIndicatorBox = lv_obj_create(_screenFrame);
-    lv_obj_set_size(_relayIndicatorBox, 60, 44);
-    lv_obj_set_pos(_relayIndicatorBox, 254, 188);
+    lv_obj_set_size(_relayIndicatorBox, 54, 44);
+    lv_obj_set_pos(_relayIndicatorBox, 260, 188);
     lv_obj_set_style_bg_color(_relayIndicatorBox, lv_color_hex(0x18202C), 0);
     lv_obj_set_style_border_color(_relayIndicatorBox, lv_color_hex(0x2A3B4C), 0);
     lv_obj_set_style_border_width(_relayIndicatorBox, 1, 0);
@@ -590,6 +639,74 @@ void GuiManager::buildUi() {
     lv_obj_set_style_text_color(_lblRelayState, lv_color_hex(0x94A3B8), 0);
     lv_label_set_text(_lblRelayState, "RIPOSO");
     lv_obj_align(_lblRelayState, LV_ALIGN_BOTTOM_MID, 0, -2);
+
+    // 4b. MODALE RIPRISTINO DI FABBRICA PROTETTA DA PASSWORD / SUPER PASSWORD
+    _resetModal = lv_obj_create(_screenFrame);
+    lv_obj_set_size(_resetModal, 310, 230);
+    lv_obj_center(_resetModal);
+    lv_obj_set_style_bg_color(_resetModal, lv_color_hex(0x0B0F17), 0);
+    lv_obj_set_style_bg_opa(_resetModal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(_resetModal, lv_color_hex(0xF59E0B), 0);
+    lv_obj_set_style_border_width(_resetModal, 1, 0);
+    lv_obj_set_style_radius(_resetModal, 8, 0);
+    lv_obj_set_style_pad_all(_resetModal, 4, 0);
+    lv_obj_clear_flag(_resetModal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(_resetModal, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* lblResetTitle = lv_label_create(_resetModal);
+    lv_obj_set_style_text_font(lblResetTitle, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lblResetTitle, lv_color_hex(0xF59E0B), 0);
+    lv_label_set_text(lblResetTitle, "RIPRISTINO FABBRICA");
+    lv_obj_set_pos(lblResetTitle, 4, 4);
+
+    lv_obj_t* btnResetCancel = lv_btn_create(_resetModal);
+    lv_obj_set_size(btnResetCancel, 58, 24);
+    lv_obj_align(btnResetCancel, LV_ALIGN_TOP_RIGHT, -2, 2);
+    lv_obj_set_style_bg_color(btnResetCancel, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_radius(btnResetCancel, 6, 0);
+    lv_obj_set_style_shadow_width(btnResetCancel, 0, 0);
+    lv_obj_add_event_cb(btnResetCancel, GuiManager::onResetCancelClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblCancel = lv_label_create(btnResetCancel);
+    lv_obj_set_style_text_font(lblCancel, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(lblCancel, lv_color_hex(0xF8FAFC), 0);
+    lv_label_set_text(lblCancel, "Annulla");
+    lv_obj_center(lblCancel);
+
+    _taResetPwd = lv_textarea_create(_resetModal);
+    lv_obj_set_size(_taResetPwd, 242, 32);
+    lv_obj_set_pos(_taResetPwd, 4, 30);
+    lv_textarea_set_one_line(_taResetPwd, true);
+    lv_textarea_set_password_mode(_taResetPwd, true);
+    lv_textarea_set_max_length(_taResetPwd, 63);
+    lv_textarea_set_placeholder_text(_taResetPwd, "Password o Super Pwd");
+
+    _btnResetEye = lv_btn_create(_resetModal);
+    lv_obj_set_size(_btnResetEye, 48, 32);
+    lv_obj_set_pos(_btnResetEye, 250, 30);
+    lv_obj_set_style_bg_color(_btnResetEye, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_radius(_btnResetEye, 6, 0);
+    lv_obj_set_style_shadow_width(_btnResetEye, 0, 0);
+    lv_obj_add_event_cb(_btnResetEye, GuiManager::onResetEyeClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblEye = lv_label_create(_btnResetEye);
+    lv_obj_set_style_text_font(lblEye, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lblEye, lv_color_hex(0x38BDF8), 0);
+    lv_label_set_text(lblEye, LV_SYMBOL_EYE_OPEN);
+    lv_obj_center(lblEye);
+
+    _lblResetMsg = lv_label_create(_resetModal);
+    lv_obj_set_width(_lblResetMsg, 294);
+    lv_obj_set_pos(_lblResetMsg, 4, 65);
+    lv_obj_set_style_text_font(_lblResetMsg, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(_lblResetMsg, lv_color_hex(0x94A3B8), 0);
+    lv_obj_set_style_text_align(_lblResetMsg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(_lblResetMsg, "Inserisci Password o Super Pwd");
+
+    _kbReset = lv_keyboard_create(_resetModal);
+    lv_obj_set_size(_kbReset, 298, 134);
+    lv_obj_align(_kbReset, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_keyboard_set_textarea(_kbReset, _taResetPwd);
+    lv_obj_add_event_cb(_kbReset, GuiManager::onResetKeyboardEvent, LV_EVENT_READY, nullptr);
+    lv_obj_add_event_cb(_kbReset, GuiManager::onResetKeyboardEvent, LV_EVENT_CANCEL, nullptr);
 
     // 5. SCHERMATA DI STANDBY / SCREENSAVER (Overlay 310x230 dentro la cornice)
     _standbyOverlay = lv_obj_create(_screenFrame);
@@ -797,9 +914,9 @@ void GuiManager::refreshDynamicData() {
 
     bool showIp = (_showIpUntilMs != 0) && (static_cast<int32_t>(_showIpUntilMs - now) > 0);
     if (showIp) {
-        char ipBuf[32];
-        snprintf(ipBuf, sizeof(ipBuf), "%s: %s",
-                 NetworkManager::isApActive() ? "AP" : "IP",
+        char ipBuf[36];
+        snprintf(ipBuf, sizeof(ipBuf), "%shttp://%s",
+                 NetworkManager::isApActive() ? "AP " : "",
                  NetworkManager::getIpAddress().c_str());
         lv_obj_set_style_text_color(_lblDate, lv_color_hex(0x38BDF8), 0);
         setLabelTextIfChanged(_lblDate, ipBuf);
@@ -838,23 +955,69 @@ void GuiManager::refreshDynamicData() {
     }
 
     WeatherData wd = WeatherService::getWeatherData();
-    if (wd.valid) {
+    if (wd.state == WeatherState::SUCCESS && wd.valid) {
         if (wd.weatherCode != _lastRenderedWeatherCode) {
             _lastRenderedWeatherCode = wd.weatherCode;
             renderModernWeatherIcon(wd.weatherCode);
         }
 
+        lv_obj_set_style_text_font(_lblWeatherTemp, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(_lblWeatherTemp, lv_color_hex(0xFFFFFF), 0);
         char tBuf[20];
         snprintf(tBuf, sizeof(tBuf), "%.1f \xC2\xB0" "C", wd.temperatureC);
         setLabelTextIfChanged(_lblWeatherTemp, tBuf);
 
+        lv_obj_set_style_text_color(_lblWeatherHum, lv_color_hex(0x94A3B8), 0);
         char hBuf[24];
         snprintf(hBuf, sizeof(hBuf), "Umidita: %d%%", wd.humidityPct);
         setLabelTextIfChanged(_lblWeatherHum, hBuf);
 
+        lv_obj_set_style_text_color(_lblWeatherWind, lv_color_hex(0x94A3B8), 0);
         char wBuf[28];
         snprintf(wBuf, sizeof(wBuf), "Vento: %.1f km/h", wd.windSpeedKmh);
         setLabelTextIfChanged(_lblWeatherWind, wBuf);
+    } else if (wd.state == WeatherState::LOADING) {
+        if (_lastRenderedWeatherCode != -1) {
+            _lastRenderedWeatherCode = -1;
+            renderModernWeatherIcon(-1);
+        }
+        lv_obj_set_style_text_font(_lblWeatherTemp, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(_lblWeatherTemp, lv_color_hex(0x38BDF8), 0);
+        setLabelTextIfChanged(_lblWeatherTemp, "Recupero meteo");
+        lv_obj_set_style_text_color(_lblWeatherHum, lv_color_hex(0x94A3B8), 0);
+        setLabelTextIfChanged(_lblWeatherHum, "Connessione API...");
+        lv_obj_set_style_text_color(_lblWeatherWind, lv_color_hex(0x64748B), 0);
+        setLabelTextIfChanged(_lblWeatherWind, NetworkManager::isStaConnected() ? NetworkManager::getIpAddress().c_str() : "Attendere...");
+    } else if (wd.state == WeatherState::ERROR) {
+        if (_lastRenderedWeatherCode != -1) {
+            _lastRenderedWeatherCode = -1;
+            renderModernWeatherIcon(-1);
+        }
+        lv_obj_set_style_text_font(_lblWeatherTemp, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(_lblWeatherTemp, lv_color_hex(0xF59E0B), 0);
+        setLabelTextIfChanged(_lblWeatherTemp, "Meteo N/D");
+        lv_obj_set_style_text_color(_lblWeatherHum, lv_color_hex(0xFCA5A5), 0);
+        setLabelTextIfChanged(_lblWeatherHum, strlen(wd.errorShort) > 0 ? wd.errorShort : "Errore rete");
+        lv_obj_set_style_text_color(_lblWeatherWind, lv_color_hex(0x38BDF8), 0);
+        if (NetworkManager::isStaConnected()) {
+            char ipLine[32];
+            snprintf(ipLine, sizeof(ipLine), "http://%s", NetworkManager::getIpAddress().c_str());
+            setLabelTextIfChanged(_lblWeatherWind, ipLine);
+        } else {
+            setLabelTextIfChanged(_lblWeatherWind, "Riprova tra 60s");
+        }
+    } else {
+        if (_lastRenderedWeatherCode != -1) {
+            _lastRenderedWeatherCode = -1;
+            renderModernWeatherIcon(-1);
+        }
+        lv_obj_set_style_text_font(_lblWeatherTemp, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(_lblWeatherTemp, lv_color_hex(0x94A3B8), 0);
+        setLabelTextIfChanged(_lblWeatherTemp, "--.- \xC2\xB0" "C");
+        lv_obj_set_style_text_color(_lblWeatherHum, lv_color_hex(0x94A3B8), 0);
+        setLabelTextIfChanged(_lblWeatherHum, "In attesa dati...");
+        lv_obj_set_style_text_color(_lblWeatherWind, lv_color_hex(0x64748B), 0);
+        setLabelTextIfChanged(_lblWeatherWind, NetworkManager::isStaConnected() ? NetworkManager::getIpAddress().c_str() : "Offline");
     }
 }
 
@@ -878,6 +1041,110 @@ void GuiManager::onSuspendToggleClicked(lv_event_t* e) {
     gui_update_state(newSusp);
     _lastTextRefreshMs = 0;
     refreshDynamicData();
+}
+
+void GuiManager::openResetModal() {
+    if (!g_has_display || !_resetModal || !_taResetPwd || !_lblResetMsg || !_kbReset) return;
+    if (_inStandby) {
+        exitStandby();
+    }
+    lv_textarea_set_text(_taResetPwd, "");
+    lv_textarea_set_password_mode(_taResetPwd, true);
+    if (_btnResetEye) {
+        lv_obj_t* lbl = lv_obj_get_child(_btnResetEye, 0);
+        if (lbl) lv_label_set_text(lbl, LV_SYMBOL_EYE_OPEN);
+    }
+    lv_obj_clear_state(_kbReset, LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(_lblResetMsg, lv_color_hex(0x94A3B8), 0);
+    lv_label_set_text(_lblResetMsg, "Inserisci Password o Super Pwd");
+    lv_obj_clear_flag(_resetModal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(_resetModal);
+    if (_standbyOverlay) {
+        lv_obj_move_foreground(_standbyOverlay);
+    }
+}
+
+void GuiManager::closeResetModal() {
+    if (!g_has_display || !_resetModal) return;
+    if (_taResetPwd) {
+        lv_textarea_set_text(_taResetPwd, "");
+    }
+    lv_obj_add_flag(_resetModal, LV_OBJ_FLAG_HIDDEN);
+}
+
+void GuiManager::onResetBtnClicked(lv_event_t* e) {
+    (void)e;
+    openResetModal();
+}
+
+void GuiManager::onResetCancelClicked(lv_event_t* e) {
+    (void)e;
+    closeResetModal();
+}
+
+void GuiManager::onResetEyeClicked(lv_event_t* e) {
+    (void)e;
+    if (!g_has_display || !_taResetPwd || !_btnResetEye) return;
+    bool curPwdMode = lv_textarea_get_password_mode(_taResetPwd);
+    bool nextPwdMode = !curPwdMode;
+    lv_textarea_set_password_mode(_taResetPwd, nextPwdMode);
+    lv_obj_t* lbl = lv_obj_get_child(_btnResetEye, 0);
+    if (lbl) {
+        lv_label_set_text(lbl, nextPwdMode ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+    }
+}
+
+void GuiManager::onResetKeyboardEvent(lv_event_t* e) {
+    if (!g_has_display || !_taResetPwd || !_lblResetMsg || !_kbReset) return;
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CANCEL) {
+        closeResetModal();
+        return;
+    }
+    if (code != LV_EVENT_READY) return;
+
+    uint32_t now = millis();
+    if (_resetLockUntilMs != 0 && static_cast<int32_t>(_resetLockUntilMs - now) > 0) {
+        uint32_t remSec = (_resetLockUntilMs - now + 999UL) / 1000UL;
+        char lockMsg[40];
+        snprintf(lockMsg, sizeof(lockMsg), "Bloccato! Attendi %lus", (unsigned long)remSec);
+        lv_obj_set_style_text_color(_lblResetMsg, lv_color_hex(0xF59E0B), 0);
+        lv_label_set_text(_lblResetMsg, lockMsg);
+        return;
+    }
+
+    const char* pwd = lv_textarea_get_text(_taResetPwd);
+    bool valid = pwd && (strlen(pwd) > 0) &&
+                 (ConfigManager::checkWebPassword(pwd) || ConfigManager::checkSuperPassword(pwd));
+
+    if (!valid) {
+        if (_resetFailedAttempts < 255) {
+            _resetFailedAttempts++;
+        }
+        if (_resetFailedAttempts >= 5) {
+            _resetLockUntilMs = now + 60000UL;
+            if (_resetLockUntilMs == 0) _resetLockUntilMs = 1;
+            _resetFailedAttempts = 0;
+        }
+        lv_textarea_set_text(_taResetPwd, "");
+        lv_obj_set_style_text_color(_lblResetMsg, lv_color_hex(0xEF4444), 0);
+        lv_label_set_text(_lblResetMsg, "Password errata! Riprova.");
+        return;
+    }
+
+    _resetFailedAttempts = 0;
+    _resetLockUntilMs = 0;
+    lv_textarea_set_text(_taResetPwd, "");
+    lv_obj_add_state(_kbReset, LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(_lblResetMsg, lv_color_hex(0x10B981), 0);
+    lv_label_set_text(_lblResetMsg, "Ripristino in corso... Riavvio!");
+    lv_timer_handler();
+
+    Serial.println("[GUI] Ripristino di fabbrica autorizzato da schermo touch.");
+    RelayController::forceOff();
+    ConfigManager::resetToFactoryDefaults();
+    vTaskDelay(pdMS_TO_TICKS(600));
+    ESP.restart();
 }
 
 void GuiManager::guiTask(void* pvParameters) {

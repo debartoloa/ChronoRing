@@ -36,6 +36,7 @@ public:
     static void requestBellRingingUpdate(bool isRinging);
     static void requestBrandingReload();
     static void requestDisplaySettingsReload();
+    static void notifyIpAcquired();
 
 private:
     static TaskHandle_t _guiTaskHandle;
@@ -82,9 +83,19 @@ private:
     static lv_obj_t* _btnRingNow;
     static lv_obj_t* _btnSuspend;
     static lv_obj_t* _lblBtnSuspend;
+    static lv_obj_t* _btnReset;
     static lv_obj_t* _relayIndicatorBox;
     static lv_obj_t* _relayLedDot;
     static lv_obj_t* _lblRelayState;
+
+    // Modale Ripristino di Fabbrica protetta da Password / Super Password
+    static lv_obj_t* _resetModal;
+    static lv_obj_t* _taResetPwd;
+    static lv_obj_t* _lblResetMsg;
+    static lv_obj_t* _btnResetEye;
+    static lv_obj_t* _kbReset;
+    static uint8_t   _resetFailedAttempts;
+    static uint32_t  _resetLockUntilMs;
 
     // Schermata di Standby (Dopo 60s di inattività)
     static lv_obj_t* _standbyOverlay;
@@ -109,5 +120,11 @@ private:
     static void onSuspendToggleClicked(lv_event_t* e);
     static void onStandbyTouched(lv_event_t* e);
     static void onHeaderClicked(lv_event_t* e);
+    static void openResetModal();
+    static void closeResetModal();
+    static void onResetBtnClicked(lv_event_t* e);
+    static void onResetCancelClicked(lv_event_t* e);
+    static void onResetEyeClicked(lv_event_t* e);
+    static void onResetKeyboardEvent(lv_event_t* e);
     static void guiTask(void* pvParameters);
 };

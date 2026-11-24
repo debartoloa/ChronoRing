@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <time.h>
+#include "../config_manager.h"
 
 /**
  * @file network_manager.h
@@ -97,6 +98,10 @@ public:
     static bool isStaConnected();
     static bool isApActive();
     static String getIpAddress();
+    static String getGatewayIp();
+    static String getSubnetMask();
+    static String getDns1Ip();
+    static String getDns2Ip();
     static String getNetworkModeString();
     static int32_t getRssi();
     static void requestMdnsRefresh();
@@ -132,9 +137,13 @@ private:
     static volatile uint8_t _consecutiveMcastRxFails;
     static uint32_t _lastMdnsKeepaliveMs;
     static bool _wifiEventRegistered;
+    static volatile bool _persistIpRequested;
     static TaskHandle_t _netTaskHandle;
 
     static void networkTask(void* pvParameters);
+    static void persistCurrentIpIfChanged();
+    static bool connectSingleSsid(const char* ssid, const char* password,
+                                  const SystemConfig& cfg, uint32_t timeoutMs);
     static bool connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan = false);
     static void startFallbackAP();
     static void setupMdnsAndNtp(bool forceMdnsRestart = false);

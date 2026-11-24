@@ -18,9 +18,15 @@ struct BellScheduleItem {
     char label[32];   // Etichetta personalizzata (es. "1a Ora", "Inizio Ricreazione", "Uscita")
 };
 
+struct SavedWifiNetwork {
+    char ssid[33];
+    char password[65];
+};
+
 struct SystemConfig {
     char wifiSsid[64];
     char wifiPassword[64];
+    std::vector<SavedWifiNetwork> savedWifiNetworks;
     char apSsid[32];
     char apPassword[64];
     char webPassword[32];
@@ -31,6 +37,12 @@ struct SystemConfig {
     bool displaySleepOff;       // false = Standby orologio/logo, true = Spegnimento retroilluminazione
     uint16_t apTimeoutMin;      // Timeout spegnimento AP senza client (0..120 min, 0 = mai, default 15)
     bool apLockAfterSta;        // true = spegne e blocca riapertura AP dopo connessione STA alla rete scolastica
+    bool staticIpEnabled;       // true = usa configurazione IP statico in STA invece del DHCP
+    char staticIp[20];
+    char staticGateway[20];
+    char staticSubnet[20];
+    char staticDns1[20];
+    char staticDns2[20];
     std::vector<BellScheduleItem> schedule;
 };
 
@@ -51,6 +63,8 @@ public:
     static constexpr uint16_t DEFAULT_AP_TIMEOUT_MIN      = 15;
     static constexpr uint16_t MAX_AP_TIMEOUT_MIN          = 120;
     static constexpr const char* NVS_SEC_NAMESPACE        = "cr_sec";
+    static constexpr const char* NVS_NET_NAMESPACE        = "cr_net";
+    static constexpr size_t MAX_SAVED_WIFI_NETWORKS       = 10;
     static constexpr size_t SUPER_PWD_MIN_LEN             = 8;
     static constexpr size_t SUPER_PWD_MAX_LEN             = 63;
     static constexpr uint16_t SUPER_PWD_HASH_ROUNDS       = 1000;
@@ -74,6 +88,15 @@ public:
     static bool clearSuperPassword();
 
     static bool setWiFiCredentials(const char* ssid, const char* password);
+    static bool removeSavedWiFi(const char* ssid);
+    static bool promoteSavedWiFi(const char* ssid);
+    static bool getSavedWiFiPassword(const char* ssid, char* outPwd, size_t outSize);
+    static bool setStaticIpConfig(bool enabled, const char* ip, const char* gateway,
+                                  const char* subnet, const char* dns1, const char* dns2);
+    static bool saveLastKnownNetInfo(const char* ssid, const char* ip,
+                                     const char* gateway, const char* subnet);
+    static bool getLastKnownNetInfo(String& ssidOut, String& ipOut,
+                                    String& gatewayOut, String& subnetOut);
     static bool setApCredentials(const char* apSsid, const char* apPassword);
     static bool resetToFactoryDefaults();
 

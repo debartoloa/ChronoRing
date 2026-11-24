@@ -5,6 +5,29 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-24
+
+### Added
+- **Macchina a stati esplicita e diagnosi errori Meteo (`WeatherService`, `GuiManager`, `WebServerHandler`)**:
+  - Stati espliciti `IDLE` → `LOADING` → `SUCCESS` | `ERROR` senza più campi vuoti o silenziosi sulla rete scolastica.
+  - Classificazione dettagliata degli errori reali (`WIFI_DISCONNECTED`, `DNS_NO_INTERNET`, `TIMEOUT`, `HTTP_STATUS`, `JSON_INVALID`) con etichetta sintetica su display LVGL da 2.8" (es. `No Internet / FW`, `API Timeout`) e dettaglio completo con codice HTTP, età dell'ultima verifica e pulsante **"Aggiorna / Riprova Meteo"** (`POST /api/weather-refresh`) nella nuova card Web **"Stato Meteo & Internet"**.
+- **Salvataggio persistente ultimo IP e accesso diretto senza `.local` (`ConfigManager`, `NetworkManager`, `GuiManager`, `WebServerHandler`)**:
+  - Salvataggio automatico su **NVS** (`cr_net`) di `last_ssid`, `last_ip`, `last_gw`, `last_mask` alla ricezione IP (`ARDUINO_EVENT_WIFI_STA_GOT_IP`), scrivendo solo su variazione per preservare la Flash.
+  - Box in evidenza nella Web Dashboard con **URL diretto `http://<IP>`**, pulsante **"Copia URL diretto"** (con fallback per browser su HTTP LAN), visualizzazione dell'ultimo IP memorizzato e avviso per reti che filtrano mDNS `.local`.
+  - Visualizzazione automatica dell'indirizzo `http://<IP>` per `20` secondi nell'header del display touch alla connessione (oltre al tocco manuale sull'header) e nel pannello meteo in caso di errore Internet.
+- **Configurazione IP Statico opzionale da Web Dashboard**:
+  - Nuovo toggle **"Configurazione IP Statico (opzionale)"** in card Wi-Fi (`POST /api/static-ip`), disattivato di default (DHCP), con pulsante **"Precompila con DHCP attuale"** e applicazione automatica tramite `WiFi.config(...)` alla connessione STA.
+- **Cronologia ultime `10` reti Wi-Fi salvate (`ConfigManager`, `NetworkManager`, `WebServerHandler`)**:
+  - Salvataggio persistente fino alle ultime `10` reti Wi-Fi in ordine MRU (`wifi_networks` in `/config.json` e backup), con scansione multi-rete automatica, ordinamento per potenza segnale RSSI e connessione/promozione della rete migliore.
+  - Lista interattiva nella card Wi-Fi della Web Dashboard con selezione rapida con un clic e rimozione singola (`POST /api/wifi-delete`).
+- **Tasto `RST` su Display Touch per Ripristino di Fabbrica protetto (`GuiManager`, `lv_conf.h`)**:
+  - Aggiunto pulsante `RST` nella barra inferiore del display touch da 2.8" con modale dedicata e tastierino LVGL (`LV_USE_KEYBOARD`) protetto sia dalla **Password Scuola** sia dalla **Super Password Tecnico** (con blocco anti brute-force `5` tentativi / `60s`), eseguendo il ripristino alle impostazioni di fabbrica preservando la Super Password in NVS.
+
+### Changed
+- **Frequenza adattiva richieste API Open-Meteo (`WeatherService`)**: polling ogni **`1` ora** nella fascia scolastica mattutina (`07:00–13:59`), ogni **`3` ore** nel resto della giornata (`14:00–06:59` o in assenza di NTP) e backoff progressivo sugli errori (`1m -> 2m -> 4m -> 8m -> 15m`, oppure `15m` immediati su HTTP `429`) per evitare rate-limiting.
+- **Export automatico multi-scheda in `firmware/` (`export_firmwares.py`, `platformio.ini`, `firmware/README.md`)**: generati e versionati automaticamente i 3 binari nominali (`chronoring_freenove_esp32s3_display.bin`, `chronoring_esp32_classic_headless.bin`, `chronoring_esp32c3_headless.bin`), rimosso il vecchio `firmware/firmware.bin` generico e riorganizzata la prima riga della Web Dashboard in 3 card bilanciate.
+- Versione firmware incrementata a **`1.5.0`** (`CHRONORING_FW_VERSION`, firma binaria `FW_VER=1.5.0`).
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

@@ -1,6 +1,7 @@
 #include "network_manager.h"
 #include "../hardware_pins.h"
 #include "../config_manager.h"
+#include "../gui/gui_manager.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <NetBIOS.h>
@@ -48,6 +49,7 @@ volatile bool NetworkManager::_mcastRxEverWorked = false;
 volatile uint8_t NetworkManager::_consecutiveMcastRxFails = 0;
 uint32_t NetworkManager::_lastMdnsKeepaliveMs = 0;
 bool NetworkManager::_wifiEventRegistered = false;
+volatile bool NetworkManager::_persistIpRequested = false;
 TaskHandle_t NetworkManager::_netTaskHandle = nullptr;
 
 constexpr const char* NetworkManager::MDNS_HOSTNAME;
@@ -146,6 +148,7 @@ void NetworkManager::notifyWifiEvent(int eventId) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             _staLostIpEvent = false;
             _mdnsRefreshRequested = true;
+            _persistIpRequested = true;
             break;
         case ARDUINO_EVENT_WIFI_STA_LOST_IP:
             _staLostIpEvent = true;
@@ -321,32 +324,39 @@ String NetworkManager::getOrStartWifiScanJson() {
     return "{\"status\":\"running\",\"networks\":[]}";
 }
 
-bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan) {
-    SystemConfig cfg = ConfigManager::getConfig();
-    if (strlen(cfg.wifiSsid) == 0) {
-        Serial.println("[NET] Nessun SSID Wi-Fi configurato in /config.json.");
-        _staConnected = false;
-        return false;
-    }
-
-    // Verifica preventiva: evita di bloccare 20s o causare channel-hopping se la rete non esiste
-    if (!skipPreScan && !isSavedNetworkVisible(cfg.wifiSsid)) {
-        Serial.printf("[NET] Rete '%s' non rilevata nell'etere.\n", cfg.wifiSsid);
-        if (!isApLocked() && !_apTimedOut) {
-            WiFi.setAutoReconnect(false);
-            WiFi.disconnect(false, true);
-        }
-        _staConnected = false;
+bool NetworkManager::connectSingleSsid(const char* ssid, const char* password,
+                                       const SystemConfig& cfg, uint32_t timeoutMs) {
+    if (!ssid || strlen(ssid) == 0) {
         return false;
     }
 
     Serial.printf("[NET] Connessione alla rete Wi-Fi '%s' in corso (timeout %u s)...\n",
-                  cfg.wifiSsid, timeoutMs / 1000);
+                  ssid, timeoutMs / 1000);
 
     WiFi.mode(_apActive ? WIFI_AP_STA : WIFI_STA);
+    if (cfg.staticIpEnabled) {
+        IPAddress sip, sgw, smask, sdns1, sdns2;
+        if (sip.fromString(cfg.staticIp) &&
+            sgw.fromString(cfg.staticGateway) &&
+            smask.fromString(cfg.staticSubnet)) {
+            if (strlen(cfg.staticDns1) > 0) sdns1.fromString(cfg.staticDns1);
+            if (strlen(cfg.staticDns2) > 0) sdns2.fromString(cfg.staticDns2);
+            if (!WiFi.config(sip, sgw, smask, sdns1, sdns2)) {
+                Serial.println("[NET] ERRORE applicazione IP statico, uso DHCP.");
+                WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+            } else {
+                Serial.printf("[NET] IP Statico applicato: %s (GW %s)\n", cfg.staticIp, cfg.staticGateway);
+            }
+        } else {
+            Serial.println("[NET] Configurazione IP statico non valida, uso DHCP.");
+            WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+        }
+    } else {
+        WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    }
     WiFi.setAutoReconnect(true);
     disableWifiPowerSave();
-    WiFi.begin(cfg.wifiSsid, cfg.wifiPassword);
+    WiFi.begin(ssid, password ? password : "");
 
     uint32_t startMs = millis();
     while ((WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) &&
@@ -370,12 +380,14 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan) {
             stopFallbackAP();
         }
         disableWifiPowerSave();
-        Serial.printf("[NET] Connesso! IP: %s | Hostname: http://%s.local | RSSI: %d dBm\n",
-                      WiFi.localIP().toString().c_str(), MDNS_HOSTNAME, WiFi.RSSI());
+        _persistIpRequested = false;
+        persistCurrentIpIfChanged();
+        Serial.printf("[NET] Connesso a '%s'! IP: %s | Hostname: http://%s.local | RSSI: %d dBm\n",
+                      ssid, WiFi.localIP().toString().c_str(), MDNS_HOSTNAME, WiFi.RSSI());
         return true;
     }
 
-    Serial.println("[NET] ATTENZIONE: Connessione Wi-Fi fallita entro il timeout.");
+    Serial.printf("[NET] ATTENZIONE: Connessione a '%s' fallita entro il timeout.\n", ssid);
     if (_apActive || (!isApLocked() && !_apTimedOut)) {
         // Evita channel-hopping mentre l'Hotspot di emergenza è attivo
         WiFi.setAutoReconnect(false);
@@ -385,6 +397,110 @@ bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan) {
         WiFi.disconnect(false, false);
         WiFi.setAutoReconnect(true);
     }
+    _staConnected = false;
+    return false;
+}
+
+bool NetworkManager::connectToSavedWiFi(uint32_t timeoutMs, bool skipPreScan) {
+    SystemConfig cfg = ConfigManager::getConfig();
+    std::vector<SavedWifiNetwork> candidates = cfg.savedWifiNetworks;
+    if (candidates.empty() && strlen(cfg.wifiSsid) > 0) {
+        SavedWifiNetwork fallback;
+        strlcpy(fallback.ssid, cfg.wifiSsid, sizeof(fallback.ssid));
+        strlcpy(fallback.password, cfg.wifiPassword, sizeof(fallback.password));
+        candidates.push_back(fallback);
+    }
+
+    if (candidates.empty()) {
+        Serial.println("[NET] Nessun SSID Wi-Fi configurato in /config.json.");
+        _staConnected = false;
+        return false;
+    }
+
+    if (skipPreScan) {
+        if (connectSingleSsid(candidates[0].ssid, candidates[0].password, cfg, timeoutMs)) {
+            return true;
+        }
+        if (candidates.size() <= 1) {
+            return false;
+        }
+    }
+
+    wifi_mode_t curMode = WiFi.getMode();
+    if (curMode == WIFI_MODE_NULL) {
+        WiFi.mode(WIFI_STA);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    } else if (curMode == WIFI_MODE_AP) {
+        WiFi.mode(WIFI_AP_STA);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    Serial.printf("[NET] Scansione etere per %u reti Wi-Fi salvate...\n", (unsigned)candidates.size());
+    int n = WiFi.scanNetworks(false, false, false, 150);
+
+    struct MatchedWifi {
+        size_t index;
+        int32_t bestRssi;
+    };
+    std::vector<MatchedWifi> visibleMatches;
+
+    if (n > 0) {
+        for (size_t idx = 0; idx < candidates.size(); ++idx) {
+            if (skipPreScan && idx == 0) continue;
+            int32_t bestRssi = -127;
+            bool found = false;
+            for (int i = 0; i < n; ++i) {
+                if (WiFi.SSID(i) == candidates[idx].ssid) {
+                    found = true;
+                    int32_t r = WiFi.RSSI(i);
+                    if (r > bestRssi) {
+                        bestRssi = r;
+                    }
+                }
+            }
+            if (found) {
+                visibleMatches.push_back({idx, bestRssi});
+            }
+        }
+    }
+    WiFi.scanDelete();
+
+    for (size_t i = 0; i < visibleMatches.size(); ++i) {
+        size_t best = i;
+        for (size_t j = i + 1; j < visibleMatches.size(); ++j) {
+            if (visibleMatches[j].bestRssi > visibleMatches[best].bestRssi ||
+                (visibleMatches[j].bestRssi == visibleMatches[best].bestRssi &&
+                 visibleMatches[j].index < visibleMatches[best].index)) {
+                best = j;
+            }
+        }
+        if (best != i) {
+            MatchedWifi tmp = visibleMatches[i];
+            visibleMatches[i] = visibleMatches[best];
+            visibleMatches[best] = tmp;
+        }
+    }
+
+    if (visibleMatches.empty()) {
+        Serial.println("[NET] Nessuna delle reti Wi-Fi salvate rilevata nell'etere.");
+        if (!isApLocked() && !_apTimedOut) {
+            WiFi.setAutoReconnect(false);
+            WiFi.disconnect(false, true);
+        }
+        _staConnected = false;
+        return false;
+    }
+
+    for (const auto& m : visibleMatches) {
+        const SavedWifiNetwork& net = candidates[m.index];
+        Serial.printf("[NET] Rete salvata visibile: '%s' (%ld dBm) -> tentativo connessione...\n",
+                      net.ssid, (long)m.bestRssi);
+        if (connectSingleSsid(net.ssid, net.password, cfg, timeoutMs)) {
+            ConfigManager::promoteSavedWiFi(net.ssid);
+            return true;
+        }
+    }
+
     _staConnected = false;
     return false;
 }
@@ -622,9 +738,15 @@ void NetworkManager::networkTask(void* pvParameters) {
                 disableWifiPowerSave();
                 Serial.printf("[NET] Connessione Wi-Fi ripristinata! IP: %s\n",
                               WiFi.localIP().toString().c_str());
+                _persistIpRequested = false;
+                persistCurrentIpIfChanged();
                 setupMdnsAndNtp(true);
                 _mdnsRefreshRequested = false;
                 lastHealthCheckMs = millis();
+            }
+            if (_persistIpRequested) {
+                _persistIpRequested = false;
+                persistCurrentIpIfChanged();
             }
             if (_apActive || (!scanGraceActive && WiFi.getMode() != WIFI_STA)) {
                 Serial.println("[NET] Rete STA attiva: disattivazione interfaccia SoftAP per sicurezza.");
@@ -768,16 +890,14 @@ void NetworkManager::networkTask(void* pvParameters) {
                 // nessuna scansione manuale è in corso e la rete salvata torna visibile.
                 if (!scanGraceActive && (!_apActive || WiFi.softAPgetStationNum() == 0)) {
                     SystemConfig cfg = ConfigManager::getConfig();
-                    if (strlen(cfg.wifiSsid) > 0 && (millis() - lastRetryMs >= 60000)) {
+                    if ((strlen(cfg.wifiSsid) > 0 || !cfg.savedWifiNetworks.empty()) &&
+                        (millis() - lastRetryMs >= 60000)) {
                         lastRetryMs = millis();
-                        if (isSavedNetworkVisible(cfg.wifiSsid)) {
-                            Serial.printf("[NET] Rete '%s' nuovamente visibile: tentativo di riconnessione...\n", cfg.wifiSsid);
-                            if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, true)) {
-                                setupMdnsAndNtp(true);
-                                _mdnsRefreshRequested = false;
-                            } else if (!isApLocked() && !_apTimedOut) {
-                                startFallbackAP();
-                            }
+                        if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, false)) {
+                            setupMdnsAndNtp(true);
+                            _mdnsRefreshRequested = false;
+                        } else if (!isApLocked() && !_apTimedOut) {
+                            startFallbackAP();
                         }
                     }
                 }
@@ -860,6 +980,40 @@ String NetworkManager::getIpAddress() {
         return WiFi.softAPIP().toString();
     }
     return "0.0.0.0";
+}
+
+String NetworkManager::getGatewayIp() {
+    return isStaConnected() ? WiFi.gatewayIP().toString() : "";
+}
+
+String NetworkManager::getSubnetMask() {
+    return isStaConnected() ? WiFi.subnetMask().toString() : "";
+}
+
+String NetworkManager::getDns1Ip() {
+    if (!isStaConnected()) return "";
+    IPAddress d = WiFi.dnsIP(0);
+    return (d != IPAddress(0, 0, 0, 0)) ? d.toString() : "";
+}
+
+String NetworkManager::getDns2Ip() {
+    if (!isStaConnected()) return "";
+    IPAddress d = WiFi.dnsIP(1);
+    return (d != IPAddress(0, 0, 0, 0)) ? d.toString() : "";
+}
+
+void NetworkManager::persistCurrentIpIfChanged() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    IPAddress local = WiFi.localIP();
+    if (local == IPAddress(0, 0, 0, 0)) return;
+
+    ConfigManager::saveLastKnownNetInfo(
+        WiFi.SSID().c_str(),
+        local.toString().c_str(),
+        WiFi.gatewayIP().toString().c_str(),
+        WiFi.subnetMask().toString().c_str()
+    );
+    GuiManager::notifyIpAcquired();
 }
 
 String NetworkManager::getNetworkModeString() {
