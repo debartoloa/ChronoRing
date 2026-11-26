@@ -1,7 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
+#if !defined(CHRONO_HEADLESS_BUILD)
 #include <lvgl.h>
+#endif
 
 /**
  * @file gui_manager.h
@@ -38,6 +40,7 @@ public:
     static void requestDisplaySettingsReload();
     static void notifyIpAcquired();
 
+#if !defined(CHRONO_HEADLESS_BUILD)
 private:
     static TaskHandle_t _guiTaskHandle;
     static volatile bool _stateDirty;
@@ -127,4 +130,5 @@ private:
     static void onResetEyeClicked(lv_event_t* e);
     static void onResetKeyboardEvent(lv_event_t* e);
     static void guiTask(void* pvParameters);
+#endif
 };

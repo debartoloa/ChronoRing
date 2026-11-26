@@ -5,6 +5,8 @@
 // Definizione del flag globale di presenza hardware del display
 bool g_has_display = false;
 
+#if !defined(CHRONO_HEADLESS_BUILD)
+
 LGFX_ChronoRing    DisplayTouchDriver::_tft;
 lv_disp_draw_buf_t DisplayTouchDriver::_drawBuf;
 lv_disp_drv_t      DisplayTouchDriver::_dispDrv;
@@ -233,3 +235,20 @@ void DisplayTouchDriver::lvglTouchReadCb(lv_indev_drv_t* indev_driver, lv_indev_
         data->point.y = y;
     }
 }
+
+#else
+
+bool DisplayTouchDriver::probeTouchI2C() {
+    return false;
+}
+
+bool DisplayTouchDriver::begin() {
+    g_has_display = false;
+    return false;
+}
+
+void DisplayTouchDriver::setBacklightBrightness(uint8_t brightness) {
+    (void)brightness;
+}
+
+#endif // !CHRONO_HEADLESS_BUILD

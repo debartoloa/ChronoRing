@@ -1,9 +1,11 @@
 #pragma once
 
 #include <Arduino.h>
+#if !defined(CHRONO_HEADLESS_BUILD)
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
+#endif
 #include "../hardware_pins.h"
 
 /**
@@ -11,6 +13,7 @@
  * @brief Driver Hardware LovyanGFX (ILI9341V SPI + FT6336G I2C Touch) con Probe I2C per modalità Headless
  */
 
+#if !defined(CHRONO_HEADLESS_BUILD)
 class LGFX_ChronoRing : public lgfx::LGFX_Device {
     lgfx::Panel_ILI9341 _panel_instance;
     lgfx::Bus_SPI       _bus_instance;
@@ -20,6 +23,7 @@ class LGFX_ChronoRing : public lgfx::LGFX_Device {
 public:
     LGFX_ChronoRing();
 };
+#endif
 
 class DisplayTouchDriver {
 public:
@@ -44,6 +48,7 @@ public:
      */
     static void setBacklightBrightness(uint8_t brightness);
 
+#if !defined(CHRONO_HEADLESS_BUILD)
 private:
     static LGFX_ChronoRing    _tft;
     static lv_disp_draw_buf_t _drawBuf;
@@ -54,4 +59,5 @@ private:
 
     static void lvglFlushCb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* color_p);
     static void lvglTouchReadCb(lv_indev_drv_t* indev_driver, lv_indev_data_t* data);
+#endif
 };

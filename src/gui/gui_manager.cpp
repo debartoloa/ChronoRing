@@ -9,6 +9,8 @@
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
 
+#if !defined(CHRONO_HEADLESS_BUILD)
+
 TaskHandle_t GuiManager::_guiTaskHandle = nullptr;
 volatile bool GuiManager::_stateDirty = false;
 volatile bool GuiManager::_targetSuspendedState = false;
@@ -1168,3 +1170,36 @@ void GuiManager::guiTask(void* pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+
+#else
+
+void gui_update_state(bool is_suspended) {
+    (void)is_suspended;
+    g_has_display = false;
+}
+
+void gui_set_bell_ringing(bool is_ringing) {
+    (void)is_ringing;
+}
+
+bool GuiManager::begin() {
+    g_has_display = false;
+    Serial.println("[GUI] Build Headless (senza LVGL/LovyanGFX): interfaccia grafica disabilitata.");
+    return false;
+}
+
+void GuiManager::requestStateUpdate(bool isSuspended) {
+    (void)isSuspended;
+}
+
+void GuiManager::requestBellRingingUpdate(bool isRinging) {
+    (void)isRinging;
+}
+
+void GuiManager::requestBrandingReload() {}
+
+void GuiManager::requestDisplaySettingsReload() {}
+
+void GuiManager::notifyIpAcquired() {}
+
+#endif // !CHRONO_HEADLESS_BUILD

@@ -26,6 +26,7 @@ e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0
 ### Changed
 - **Frequenza adattiva richieste API Open-Meteo (`WeatherService`)**: polling ogni **`1` ora** nella fascia scolastica mattutina (`07:00–13:59`), ogni **`3` ore** nel resto della giornata (`14:00–06:59` o in assenza di NTP) e backoff progressivo sugli errori (`1m -> 2m -> 4m -> 8m -> 15m`, oppure `15m` immediati su HTTP `429`) per evitare rate-limiting.
 - **Export automatico multi-scheda in `firmware/` (`export_firmwares.py`, `platformio.ini`, `firmware/README.md`)**: generati e versionati automaticamente i 3 binari nominali (`chronoring_freenove_esp32s3_display.bin`, `chronoring_esp32_classic_headless.bin`, `chronoring_esp32c3_headless.bin`), rimosso il vecchio `firmware/firmware.bin` generico e riorganizzata la prima riga della Web Dashboard in 3 card bilanciate.
+- **Ottimizzazione target Headless 4 MB (`platformio.ini`, `src/gui/`)**: imposti esplicitamente `min_spiffs.csv`, `littlefs` e `lib_ignore = LovyanGFX, lvgl` (`-DCHRONO_HEADLESS_BUILD=1`) su `esp32_classic` ed `esp32_c3` per evitare l'errore `OTA: Not Enough Space` e ridurre drasticamente l'occupazione Flash dei binari headless.
 - Versione firmware incrementata a **`1.5.0`** (`CHRONORING_FW_VERSION`, firma binaria `FW_VER=1.5.0`).
 
 ## [1.4.0] - 2026-11-22
