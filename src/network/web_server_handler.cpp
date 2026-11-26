@@ -641,6 +641,17 @@ function renderWeatherStatus(w) {
   if (okEl) okEl.textContent = fmtAgeSec(w.last_ok_age_s);
   if (tryEl) tryEl.textContent = fmtAgeSec(w.last_try_age_s);
 
+  if (w.enabled === false) {
+    badge.textContent = 'HEADLESS';
+    badge.className = 'badge badge-warn';
+    mainEl.style.color = '#94a3b8';
+    mainEl.textContent = 'Modalità Headless attiva';
+    detEl.textContent = 'Servizio meteo disattivato in modalità Headless.';
+    if (stateEl) stateEl.textContent = 'DISABLED';
+    if (btn) { btn.disabled = true; btn.textContent = '🚫 Non attivo in Headless'; }
+    return;
+  }
+
   if (st === 'LOADING') {
     badge.textContent = 'IN CORSO...';
     badge.className = 'badge badge-warn';
@@ -1718,7 +1729,8 @@ void WebServerHandler::setupRoutes() {
             request->redirect(ConfigManager::isSuperPasswordConfigured() ? "/" : "/setup-super");
             return;
         }
-        request->send(200, "text/html; charset=utf-8", LOGIN_HTML);
+        request->send(200, "text/html; charset=utf-8",
+                      reinterpret_cast<const uint8_t*>(LOGIN_HTML), sizeof(LOGIN_HTML) - 1);
     });
 
     // 2. LOGOUT
@@ -1741,7 +1753,8 @@ void WebServerHandler::setupRoutes() {
             request->redirect("/setup-super");
             return;
         }
-        request->send(200, "text/html; charset=utf-8", DASHBOARD_HTML);
+        request->send(200, "text/html; charset=utf-8",
+                      reinterpret_cast<const uint8_t*>(DASHBOARD_HTML), sizeof(DASHBOARD_HTML) - 1);
     });
 
     // 3b. WIZARD UNA TANTUM CONFIGURAZIONE SUPER PASSWORD TECNICO (/setup-super)
@@ -1754,7 +1767,8 @@ void WebServerHandler::setupRoutes() {
             request->redirect("/");
             return;
         }
-        request->send(200, "text/html; charset=utf-8", SETUP_SUPER_HTML);
+        request->send(200, "text/html; charset=utf-8",
+                      reinterpret_cast<const uint8_t*>(SETUP_SUPER_HTML), sizeof(SETUP_SUPER_HTML) - 1);
     });
 
     // 4. API LOGIN A DOPPIO RUOLO CON ANTI BRUTE-FORCE (POST JSON)
@@ -1932,6 +1946,7 @@ void WebServerHandler::setupRoutes() {
 
         WeatherData wd = WeatherService::getWeatherData();
         JsonObject wObj = doc["weather"].to<JsonObject>();
+        wObj["enabled"] = WeatherService::isEnabled();
         wObj["state"] = WeatherService::stateToString(wd.state);
         wObj["error_code"] = WeatherService::errorToCode(wd.error);
         wObj["http_code"] = wd.httpCode;
@@ -2376,6 +2391,10 @@ void WebServerHandler::setupRoutes() {
             request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
             return;
         }
+        if (!WeatherService::isEnabled()) {
+            request->send(200, "application/json", "{\"message\":\"Servizio meteo non attivo in modalità Headless.\"}");
+            return;
+        }
         WeatherService::requestImmediateUpdate();
         request->send(200, "application/json", "{\"message\":\"Verifica meteo avviata!\"}");
     });
@@ -2685,7 +2704,8 @@ void WebServerHandler::setupRoutes() {
             request->redirect("/login");
             return;
         }
-        request->send(200, "text/html; charset=utf-8", OTA_HTML);
+        request->send(200, "text/html; charset=utf-8",
+                      reinterpret_cast<const uint8_t*>(OTA_HTML), sizeof(OTA_HTML) - 1);
     });
 
     _server.on("/update", HTTP_POST,

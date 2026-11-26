@@ -125,9 +125,14 @@ private:
     static bool _superPwdConfigured;
     static uint8_t _superSalt[16];
     static uint8_t _superHash[32];
+    static char _lastNetSsid[33];
+    static char _lastNetIp[20];
+    static char _lastNetGw[20];
+    static char _lastNetMask[20];
 
     static void loadDefaults(SystemConfig& cfg);
     static void loadSuperPasswordFromNvsInternal();
+    static void loadLastKnownNetInfoFromNvsInternal();
     static bool loadFromFileInternal();
     static bool saveToFileInternal(const SystemConfig& cfg);
     static uint32_t clampRelayPulse(uint32_t pulseMs);

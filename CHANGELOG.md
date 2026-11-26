@@ -29,6 +29,12 @@ e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0
 - **Ottimizzazione target Headless 4 MB (`platformio.ini`, `src/gui/`)**: imposti esplicitamente `min_spiffs.csv`, `littlefs` e `lib_ignore = LovyanGFX, lvgl` (`-DCHRONO_HEADLESS_BUILD=1`) su `esp32_classic` ed `esp32_c3` per evitare l'errore `OTA: Not Enough Space` e ridurre drasticamente l'occupazione Flash dei binari headless.
 - Versione firmware incrementata a **`1.5.0`** (`CHRONORING_FW_VERSION`, firma binaria `FW_VER=1.5.0`).
 
+### Fixed
+- **Risolto blocco post-wizard `/setup-super` su ESP32 Classic senza PSRAM (`WebServerHandler`, `ConfigManager`)**:
+  - Streaming HTTP zero-copy direttamente da Flash (`PROGMEM`) per tutte le pagine HTML (`DASHBOARD_HTML`, `LOGIN_HTML`, `SETUP_SUPER_HTML`, `OTA_HTML`), eliminando la copia in heap contiguo (~`60 KB`) dentro `AsyncTCP`.
+  - Cache in RAM delle ultime informazioni di rete (`_lastNetSsid`, `_lastNetIp`, `_lastNetGw`, `_lastNetMask`) caricate da NVS (`cr_net`) al boot, rimuovendo letture NVS al secondo su `GET /api/status`.
+  - Esposizione esplicita dello stato `HEADLESS` (`weather.enabled`) nella card Meteo della Web Dashboard.
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

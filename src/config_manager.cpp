@@ -13,6 +13,10 @@ bool ConfigManager::_initialized = false;
 bool ConfigManager::_superPwdConfigured = false;
 uint8_t ConfigManager::_superSalt[16] = {0};
 uint8_t ConfigManager::_superHash[32] = {0};
+char ConfigManager::_lastNetSsid[33] = {0};
+char ConfigManager::_lastNetIp[20] = {0};
+char ConfigManager::_lastNetGw[20] = {0};
+char ConfigManager::_lastNetMask[20] = {0};
 
 constexpr const char* ConfigManager::CONFIG_FILE_PATH;
 constexpr const char* ConfigManager::SCHOOL_LOGO_PATH;
@@ -186,6 +190,7 @@ bool ConfigManager::begin() {
 
     // Carica sempre l'hash della Super Password Tecnico dalla partizione NVS separata
     loadSuperPasswordFromNvsInternal();
+    loadLastKnownNetInfoFromNvsInternal();
 
     if (!LittleFS.begin(true)) {
         Serial.println("[CONFIG] ERRORE CRITICO: Montaggio LittleFS fallito!");
@@ -993,33 +998,62 @@ bool ConfigManager::setStaticIpConfig(bool enabled, const char* ip, const char* 
     return ok;
 }
 
+void ConfigManager::loadLastKnownNetInfoFromNvsInternal() {
+    _lastNetSsid[0] = '\0';
+    _lastNetIp[0] = '\0';
+    _lastNetGw[0] = '\0';
+    _lastNetMask[0] = '\0';
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_NET_NAMESPACE, true)) {
+        return;
+    }
+    String s = prefs.getString("last_ssid", "");
+    String i = prefs.getString("last_ip", "");
+    String g = prefs.getString("last_gw", "");
+    String m = prefs.getString("last_mask", "");
+    prefs.end();
+
+    strlcpy(_lastNetSsid, s.c_str(), sizeof(_lastNetSsid));
+    strlcpy(_lastNetIp,   i.c_str(), sizeof(_lastNetIp));
+    strlcpy(_lastNetGw,   g.c_str(), sizeof(_lastNetGw));
+    strlcpy(_lastNetMask, m.c_str(), sizeof(_lastNetMask));
+}
+
 bool ConfigManager::saveLastKnownNetInfo(const char* ssid, const char* ip,
                                          const char* gateway, const char* subnet) {
     if (!_mutex || !ip || strlen(ip) == 0) return false;
     bool ok = false;
     if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
-        Preferences prefs;
-        if (prefs.begin(NVS_NET_NAMESPACE, false)) {
-            const char* safeSsid = ssid ? ssid : "";
-            const char* safeGw   = gateway ? gateway : "";
-            const char* safeMask = subnet ? subnet : "";
+        const char* safeSsid = ssid ? ssid : "";
+        const char* safeGw   = gateway ? gateway : "";
+        const char* safeMask = subnet ? subnet : "";
 
-            bool changed =
-                (prefs.getString("last_ssid", "") != safeSsid) ||
-                (prefs.getString("last_ip", "") != ip) ||
-                (prefs.getString("last_gw", "") != safeGw) ||
-                (prefs.getString("last_mask", "") != safeMask);
+        bool changed =
+            (strncmp(_lastNetSsid, safeSsid, sizeof(_lastNetSsid) - 1) != 0) ||
+            (strncmp(_lastNetIp, ip, sizeof(_lastNetIp) - 1) != 0) ||
+            (strncmp(_lastNetGw, safeGw, sizeof(_lastNetGw) - 1) != 0) ||
+            (strncmp(_lastNetMask, safeMask, sizeof(_lastNetMask) - 1) != 0);
 
-            if (changed) {
+        if (!changed) {
+            ok = true;
+        } else {
+            Preferences prefs;
+            if (prefs.begin(NVS_NET_NAMESPACE, false)) {
                 prefs.putString("last_ssid", safeSsid);
                 prefs.putString("last_ip", ip);
                 prefs.putString("last_gw", safeGw);
                 prefs.putString("last_mask", safeMask);
+                prefs.end();
+
+                strlcpy(_lastNetSsid, safeSsid, sizeof(_lastNetSsid));
+                strlcpy(_lastNetIp, ip, sizeof(_lastNetIp));
+                strlcpy(_lastNetGw, safeGw, sizeof(_lastNetGw));
+                strlcpy(_lastNetMask, safeMask, sizeof(_lastNetMask));
                 Serial.printf("[CONFIG] Salvato ultimo IP STA in NVS (%s -> %s, GW: %s)\n",
-                              safeSsid, ip, safeGw);
+                              _lastNetSsid, _lastNetIp, _lastNetGw);
+                ok = true;
             }
-            prefs.end();
-            ok = true;
         }
         xSemaphoreGive(_mutex);
     }
@@ -1035,15 +1069,11 @@ bool ConfigManager::getLastKnownNetInfo(String& ssidOut, String& ipOut,
     if (!_mutex) return false;
     bool found = false;
     if (xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {
-        Preferences prefs;
-        if (prefs.begin(NVS_NET_NAMESPACE, true)) {
-            ssidOut    = prefs.getString("last_ssid", "");
-            ipOut      = prefs.getString("last_ip", "");
-            gatewayOut = prefs.getString("last_gw", "");
-            subnetOut  = prefs.getString("last_mask", "");
-            prefs.end();
-            found = ipOut.length() > 0;
-        }
+        ssidOut    = _lastNetSsid;
+        ipOut      = _lastNetIp;
+        gatewayOut = _lastNetGw;
+        subnetOut  = _lastNetMask;
+        found = (_lastNetIp[0] != '\0');
         xSemaphoreGive(_mutex);
     }
     return found;
