@@ -5,6 +5,22 @@ Tutte le modifiche rilevanti al progetto **ChronoRing** sono documentate in ques
 Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/),
 e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-11-27
+
+### Changed
+- **Ottimizzazione target Headless 4 MB (`platformio.ini`, `src/gui/`)**: imposti esplicitamente `min_spiffs.csv`, `littlefs` e `lib_ignore = LovyanGFX, lvgl` (`-DCHRONO_HEADLESS_BUILD=1`) su `esp32_classic` ed `esp32_c3` per evitare l'errore `OTA: Not Enough Space` e ridurre drasticamente l'occupazione Flash dei binari headless.
+- Versione firmware incrementata a **`1.5.1`** (`CHRONORING_FW_VERSION`, firma binaria `FW_VER=1.5.1`).
+
+### Fixed
+- **Risolto blocco post-wizard `/setup-super` su ESP32 Classic senza PSRAM (`WebServerHandler`, `ConfigManager`)**:
+  - Streaming HTTP zero-copy direttamente da Flash (`PROGMEM`) per tutte le pagine HTML (`DASHBOARD_HTML`, `LOGIN_HTML`, `SETUP_SUPER_HTML`, `OTA_HTML`), eliminando la copia in heap contiguo (~`60 KB`) dentro `AsyncTCP`.
+  - Cache in RAM delle ultime informazioni di rete (`_lastNetSsid`, `_lastNetIp`, `_lastNetGw`, `_lastNetMask`) caricate da NVS (`cr_net`) al boot, rimuovendo letture NVS al secondo su `GET /api/status`.
+  - Esposizione esplicita dello stato `HEADLESS` (`weather.enabled`) nella card Meteo della Web Dashboard.
+- **Risolto blocco `chronoring.local` e NetBIOS `chronoring` dopo ~1 ora in assenza di altri peer mDNS (`NetworkManager`, `main.cpp`)**:
+  - Aggiunto hook leggero L2 su `netif->input` (`s_staGroupRxSpyInput`) per rilevare la reale ricezione di qualsiasi frame Ethernet Broadcast/Multicast senza dipendere da altri responder `_http._tcp` sulla LAN.
+  - Introdotto watchdog GTK auto-riparante a 2 fasi: IGMP rejoin + riavvio mDNS/NetBIOS (`NBNS.end()` + `NBNS.begin()`) dopo `2` minuti senza frame di gruppo e riassociazione STA dopo `4` minuti per rinnovare la chiave WPA2 GTK.
+  - Aggiornato il comando diagnostico seriale `'p'` con contatore ed età `rxGroupPkts`.
+
 ## [1.5.0] - 2026-11-24
 
 ### Added
@@ -26,18 +42,7 @@ e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0
 ### Changed
 - **Frequenza adattiva richieste API Open-Meteo (`WeatherService`)**: polling ogni **`1` ora** nella fascia scolastica mattutina (`07:00–13:59`), ogni **`3` ore** nel resto della giornata (`14:00–06:59` o in assenza di NTP) e backoff progressivo sugli errori (`1m -> 2m -> 4m -> 8m -> 15m`, oppure `15m` immediati su HTTP `429`) per evitare rate-limiting.
 - **Export automatico multi-scheda in `firmware/` (`export_firmwares.py`, `platformio.ini`, `firmware/README.md`)**: generati e versionati automaticamente i 3 binari nominali (`chronoring_freenove_esp32s3_display.bin`, `chronoring_esp32_classic_headless.bin`, `chronoring_esp32c3_headless.bin`), rimosso il vecchio `firmware/firmware.bin` generico e riorganizzata la prima riga della Web Dashboard in 3 card bilanciate.
-- **Ottimizzazione target Headless 4 MB (`platformio.ini`, `src/gui/`)**: imposti esplicitamente `min_spiffs.csv`, `littlefs` e `lib_ignore = LovyanGFX, lvgl` (`-DCHRONO_HEADLESS_BUILD=1`) su `esp32_classic` ed `esp32_c3` per evitare l'errore `OTA: Not Enough Space` e ridurre drasticamente l'occupazione Flash dei binari headless.
 - Versione firmware incrementata a **`1.5.0`** (`CHRONORING_FW_VERSION`, firma binaria `FW_VER=1.5.0`).
-
-### Fixed
-- **Risolto blocco post-wizard `/setup-super` su ESP32 Classic senza PSRAM (`WebServerHandler`, `ConfigManager`)**:
-  - Streaming HTTP zero-copy direttamente da Flash (`PROGMEM`) per tutte le pagine HTML (`DASHBOARD_HTML`, `LOGIN_HTML`, `SETUP_SUPER_HTML`, `OTA_HTML`), eliminando la copia in heap contiguo (~`60 KB`) dentro `AsyncTCP`.
-  - Cache in RAM delle ultime informazioni di rete (`_lastNetSsid`, `_lastNetIp`, `_lastNetGw`, `_lastNetMask`) caricate da NVS (`cr_net`) al boot, rimuovendo letture NVS al secondo su `GET /api/status`.
-  - Esposizione esplicita dello stato `HEADLESS` (`weather.enabled`) nella card Meteo della Web Dashboard.
-- **Risolto blocco `chronoring.local` e NetBIOS `chronoring` dopo ~1 ora in assenza di altri peer mDNS (`NetworkManager`, `main.cpp`)**:
-  - Aggiunto hook leggero L2 su `netif->input` (`s_staGroupRxSpyInput`) per rilevare la reale ricezione di qualsiasi frame Ethernet Broadcast/Multicast senza dipendere da altri responder `_http._tcp` sulla LAN.
-  - Introdotto watchdog GTK auto-riparante a 2 fasi: IGMP rejoin + riavvio mDNS/NetBIOS (`NBNS.end()` + `NBNS.begin()`) dopo `2` minuti senza frame di gruppo e riassociazione STA dopo `4` minuti per rinnovare la chiave WPA2 GTK.
-  - Aggiornato il comando diagnostico seriale `'p'` con contatore ed età `rxGroupPkts`.
 
 ## [1.4.0] - 2026-11-22
 
