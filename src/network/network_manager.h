@@ -19,6 +19,8 @@ public:
     static constexpr uint32_t WIFI_HEALTH_CHECK_INTERVAL_MS = 5UL * 60UL * 1000UL;  // 5 minuti
     static constexpr uint8_t  WIFI_ZOMBIE_FAIL_THRESHOLD    = 4;                    // ~20 min di fallimenti DNS consecutivi
     static constexpr uint8_t  WIFI_MCAST_FAIL_THRESHOLD     = 3;                    // ~15 min di assenza RX multicast (GTK)
+    static constexpr uint32_t GROUP_RX_SOFT_TIMEOUT_MS      = 2UL * 60UL * 1000UL;  // 2 min senza frame L2 Bcast/Mcast -> IGMP rejoin + restart mDNS
+    static constexpr uint32_t GROUP_RX_HARD_TIMEOUT_MS      = 4UL * 60UL * 1000UL;  // 4 min senza frame L2 Bcast/Mcast -> riassociazione STA (rinnovo GTK)
 
     // Stringa POSIX per fuso orario Italiano (CET/CEST con cambio ora solare/legale automatico)
     static constexpr const char* TZ_ITALY_POSIX      = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -111,6 +113,9 @@ public:
     static uint32_t getMdnsRestartCount();
     static uint32_t getMdnsKeepaliveCount();
     static bool hasMulticastRxPeers();
+    static void recordGroupRxPacket();
+    static uint32_t getGroupRxPacketCount();
+    static int32_t getLastGroupRxAgeSec();
 
 private:
     static volatile bool _staConnected;
@@ -135,6 +140,8 @@ private:
     static volatile uint8_t _consecutiveHealthFails;
     static volatile bool _mcastRxEverWorked;
     static volatile uint8_t _consecutiveMcastRxFails;
+    static volatile uint32_t _groupRxPacketCount;
+    static volatile uint32_t _lastGroupRxMs;
     static uint32_t _lastMdnsKeepaliveMs;
     static bool _wifiEventRegistered;
     static volatile bool _persistIpRequested;

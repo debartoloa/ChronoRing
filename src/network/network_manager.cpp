@@ -47,6 +47,8 @@ volatile bool NetworkManager::_dnsEverWorked = false;
 volatile uint8_t NetworkManager::_consecutiveHealthFails = 0;
 volatile bool NetworkManager::_mcastRxEverWorked = false;
 volatile uint8_t NetworkManager::_consecutiveMcastRxFails = 0;
+volatile uint32_t NetworkManager::_groupRxPacketCount = 0;
+volatile uint32_t NetworkManager::_lastGroupRxMs = 0;
 uint32_t NetworkManager::_lastMdnsKeepaliveMs = 0;
 bool NetworkManager::_wifiEventRegistered = false;
 volatile bool NetworkManager::_persistIpRequested = false;
@@ -60,9 +62,24 @@ constexpr uint32_t NetworkManager::MDNS_KEEPALIVE_INTERVAL_MS;
 constexpr uint32_t NetworkManager::WIFI_HEALTH_CHECK_INTERVAL_MS;
 constexpr uint8_t  NetworkManager::WIFI_ZOMBIE_FAIL_THRESHOLD;
 constexpr uint8_t  NetworkManager::WIFI_MCAST_FAIL_THRESHOLD;
+constexpr uint32_t NetworkManager::GROUP_RX_SOFT_TIMEOUT_MS;
+constexpr uint32_t NetworkManager::GROUP_RX_HARD_TIMEOUT_MS;
 constexpr const char* NetworkManager::TZ_ITALY_POSIX;
 constexpr const char* NetworkManager::NTP_SERVER_1;
 constexpr const char* NetworkManager::NTP_SERVER_2;
+
+// Hook leggero su netif->input per rilevare in tempo reale la ricezione di qualsiasi
+// frame Ethernet L2 Broadcast (FF:..) o Multicast (01:..) senza dipendere da altri peer mDNS.
+static netif_input_fn s_origStaInput = nullptr;
+static err_t s_staGroupRxSpyInput(struct pbuf* p, struct netif* inp) {
+    if (p != nullptr && p->len >= 14 && p->payload != nullptr) {
+        const uint8_t* ethDest = static_cast<const uint8_t*>(p->payload);
+        if ((ethDest[0] & 0x01) != 0) {
+            NetworkManager::recordGroupRxPacket();
+        }
+    }
+    return s_origStaInput ? s_origStaInput(p, inp) : ERR_IF;
+}
 
 // Eseguito sul thread TCPIP lwIP per evitare data-race su netif/IGMP/PCB:
 // invia un IGMP Membership Report aggiornato e un annuncio mDNS unsolicited (RFC 6762).
@@ -75,6 +92,11 @@ static void s_mdnsIgmpKeepaliveCb(void* arg) {
     struct netif* lwipNetif = static_cast<struct netif*>(esp_netif_get_netif_impl(staNetif));
     if (!lwipNetif || !netif_is_up(lwipNetif) || ip4_addr_isany_val(*netif_ip4_addr(lwipNetif))) {
         return;
+    }
+
+    if (lwipNetif->input != nullptr && lwipNetif->input != s_staGroupRxSpyInput) {
+        s_origStaInput = lwipNetif->input;
+        lwipNetif->input = s_staGroupRxSpyInput;
     }
 
     ip4_addr_t mdnsGroup;
@@ -605,8 +627,12 @@ void NetworkManager::setupMdnsAndNtp(bool forceMdnsRestart) {
         restartMdns();
     }
 
-    if (_staConnected && !_nbnsStarted) {
-        if (NBNS.begin(MDNS_HOSTNAME)) {
+    if (_staConnected) {
+        if (forceMdnsRestart && _nbnsStarted) {
+            NBNS.end();
+            _nbnsStarted = false;
+        }
+        if (!_nbnsStarted && NBNS.begin(MDNS_HOSTNAME)) {
             _nbnsStarted = true;
             Serial.printf("[NET] NetBIOS avviato: http://%s\n", MDNS_HOSTNAME);
         }
@@ -651,6 +677,24 @@ bool NetworkManager::hasMulticastRxPeers() {
     return _mcastRxEverWorked;
 }
 
+void NetworkManager::recordGroupRxPacket() {
+    _groupRxPacketCount = _groupRxPacketCount + 1;
+    uint32_t now = millis();
+    _lastGroupRxMs = (now != 0) ? now : 1;
+}
+
+uint32_t NetworkManager::getGroupRxPacketCount() {
+    return _groupRxPacketCount;
+}
+
+int32_t NetworkManager::getLastGroupRxAgeSec() {
+    uint32_t lastMs = _lastGroupRxMs;
+    if (lastMs == 0) {
+        return -1;
+    }
+    return static_cast<int32_t>((millis() - lastMs) / 1000UL);
+}
+
 void NetworkManager::requestReconnect() {
     _reconnectRequested = true;
 }
@@ -663,6 +707,8 @@ void NetworkManager::networkTask(void* pvParameters) {
     (void)pvParameters;
     uint32_t lastRetryMs = millis();
     uint32_t lastHealthCheckMs = millis();
+    uint32_t lastGroupCheckMs = millis();
+    uint8_t groupRxRecoveryStage = 0;
     uint32_t disconnectStartMs = 0;
 
     for (;;) {
@@ -739,10 +785,14 @@ void NetworkManager::networkTask(void* pvParameters) {
                 Serial.printf("[NET] Connessione Wi-Fi ripristinata! IP: %s\n",
                               WiFi.localIP().toString().c_str());
                 _persistIpRequested = false;
+                groupRxRecoveryStage = 0;
+                uint32_t nowRx = millis();
+                _lastGroupRxMs = (nowRx != 0) ? nowRx : 1;
                 persistCurrentIpIfChanged();
                 setupMdnsAndNtp(true);
                 _mdnsRefreshRequested = false;
                 lastHealthCheckMs = millis();
+                lastGroupCheckMs = millis();
             }
             if (_persistIpRequested) {
                 _persistIpRequested = false;
@@ -771,7 +821,42 @@ void NetworkManager::networkTask(void* pvParameters) {
                 sendMdnsAndIgmpKeepalive(false);
             }
 
-            // Watchdog adattivo: rileva stato "zombie" DHCP/DNS e perdita RX multicast (es. GTK rekey)
+            // Watchdog L2 Broadcast/Multicast RX (rileva blocco chiave WPA2 GTK anche senza altri peer mDNS)
+            uint32_t nowNet = millis();
+            if (_lastGroupRxMs != 0 && (nowNet - _lastGroupRxMs < GROUP_RX_SOFT_TIMEOUT_MS)) {
+                groupRxRecoveryStage = 0;
+            }
+            if (_mdnsStarted && !scanGraceActive && _groupRxPacketCount > 0 && _lastGroupRxMs != 0 &&
+                (nowNet - lastGroupCheckMs >= 60000UL)) {
+                lastGroupCheckMs = nowNet;
+                uint32_t silentMs = nowNet - _lastGroupRxMs;
+                if (silentMs >= GROUP_RX_HARD_TIMEOUT_MS && groupRxRecoveryStage >= 1) {
+                    Serial.printf("[NET] Watchdog Multicast/GTK: 0 frame broadcast/multicast ricevuti da %lus -> riassociazione STA per rinnovo GTK...\n",
+                                  (unsigned long)(silentMs / 1000UL));
+                    _consecutiveHealthFails = 0;
+                    _consecutiveMcastRxFails = 0;
+                    _staConnected = false;
+                    WiFi.disconnect(false, false);
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    if (connectToSavedWiFi(WIFI_CONNECT_TIMEOUT_MS, true)) {
+                        setupMdnsAndNtp(true);
+                        _mdnsRefreshRequested = false;
+                    }
+                    groupRxRecoveryStage = 0;
+                    uint32_t resetNow = millis();
+                    _lastGroupRxMs = (resetNow != 0) ? resetNow : 1;
+                    lastRetryMs = resetNow;
+                    lastHealthCheckMs = resetNow;
+                } else if (silentMs >= GROUP_RX_SOFT_TIMEOUT_MS && groupRxRecoveryStage == 0) {
+                    Serial.printf("[NET] Avviso Watchdog Multicast/GTK: nessun frame broadcast/multicast da %lus -> IGMP rejoin + restart mDNS...\n",
+                                  (unsigned long)(silentMs / 1000UL));
+                    sendMdnsAndIgmpKeepalive(true);
+                    setupMdnsAndNtp(true);
+                    groupRxRecoveryStage = 1;
+                }
+            }
+
+            // Watchdog adattivo DNS: rileva stato "zombie" DHCP/DNS senza connettività L3
             if (!scanGraceActive && (millis() - lastHealthCheckMs >= WIFI_HEALTH_CHECK_INTERVAL_MS)) {
                 lastHealthCheckMs = millis();
                 disableWifiPowerSave();
@@ -786,53 +871,8 @@ void NetworkManager::networkTask(void* pvParameters) {
                                   _consecutiveHealthFails, WIFI_ZOMBIE_FAIL_THRESHOLD);
                 }
 
-                bool triggeredStaReset = false;
                 if (_consecutiveHealthFails >= WIFI_ZOMBIE_FAIL_THRESHOLD) {
                     Serial.println("[NET] Watchdog STA: rilevato stato Wi-Fi zombie, riavvio associazione...");
-                    triggeredStaReset = true;
-                } else if (_mdnsStarted) {
-                    // Verifica ricezione multicast reale interrogando eventuali altri responder _http._tcp sulla LAN
-                    bool mcastRxOk = false;
-                    mdns_result_t* mres = nullptr;
-                    esp_err_t merr = mdns_query_ptr("_http", "_tcp", 1500, 5, &mres);
-                    if (merr == ESP_OK && mres != nullptr) {
-                        IPAddress selfIp = WiFi.localIP();
-                        for (mdns_result_t* r = mres; r != nullptr; r = r->next) {
-                            for (mdns_ip_addr_t* a = r->addr; a != nullptr; a = a->next) {
-                                if (a->addr.type == ESP_IPADDR_TYPE_V4) {
-                                    if (IPAddress(a->addr.u_addr.ip4.addr) != selfIp) {
-                                        mcastRxOk = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (mcastRxOk) break;
-                        }
-                    }
-                    if (mres != nullptr) {
-                        mdns_query_results_free(mres);
-                    }
-
-                    if (mcastRxOk) {
-                        _mcastRxEverWorked = true;
-                        _consecutiveMcastRxFails = 0;
-                    } else if (_mcastRxEverWorked) {
-                        if (_consecutiveMcastRxFails < 255) {
-                            _consecutiveMcastRxFails = _consecutiveMcastRxFails + 1;
-                        }
-                        Serial.printf("[NET] Avviso Watchdog Multicast: nessun peer mDNS RX (%u/%u).\n",
-                                      _consecutiveMcastRxFails, WIFI_MCAST_FAIL_THRESHOLD);
-                        if (_consecutiveMcastRxFails == 1) {
-                            // Primo tentativo leggero: forza rejoin IGMP + report immediato
-                            sendMdnsAndIgmpKeepalive(true);
-                        } else if (_consecutiveMcastRxFails >= WIFI_MCAST_FAIL_THRESHOLD) {
-                            Serial.println("[NET] Watchdog Multicast/GTK: RX multicast bloccato, riavvio associazione STA...");
-                            triggeredStaReset = true;
-                        }
-                    }
-                }
-
-                if (triggeredStaReset) {
                     _consecutiveHealthFails = 0;
                     _consecutiveMcastRxFails = 0;
                     _staConnected = false;
@@ -842,6 +882,7 @@ void NetworkManager::networkTask(void* pvParameters) {
                         setupMdnsAndNtp(true);
                         _mdnsRefreshRequested = false;
                     }
+                    groupRxRecoveryStage = 0;
                     lastRetryMs = millis();
                     lastHealthCheckMs = millis();
                 }

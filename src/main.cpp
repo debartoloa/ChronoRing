@@ -168,11 +168,12 @@ void loop() {
                               NetworkManager::getNetworkModeString().c_str(),
                               NetworkManager::getIpAddress().c_str(),
                               (long)NetworkManager::getRssi());
-                Serial.printf(" - Statistiche WiFi: disconnessioni=%lu | restart mDNS=%lu | keepalive IGMP/mDNS=%lu | peer mDNS RX=%s\n",
+                Serial.printf(" - Statistiche WiFi: disconnessioni=%lu | restart mDNS=%lu | keepalive IGMP/mDNS=%lu | rxGroupPkts=%lu (ultimo %lds fa)\n",
                               (unsigned long)NetworkManager::getStaDisconnectCount(),
                               (unsigned long)NetworkManager::getMdnsRestartCount(),
                               (unsigned long)NetworkManager::getMdnsKeepaliveCount(),
-                              NetworkManager::hasMulticastRxPeers() ? "SI" : "N/D");
+                              (unsigned long)NetworkManager::getGroupRxPacketCount(),
+                              (long)NetworkManager::getLastGroupRxAgeSec());
                 Serial.printf(" - Prossimo Suono : %s\n", Scheduler::getNextBellString().c_str());
                 Serial.printf(" - Meteo          : %s | %.1f C | Umidita %d%% | Vento %.1f km/h\n",
                               wd.conditionText, wd.temperatureC, wd.humidityPct, wd.windSpeedKmh);

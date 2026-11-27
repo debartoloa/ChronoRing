@@ -34,6 +34,10 @@ e questo progetto aderisce al [Semantic Versioning](https://semver.org/spec/v2.0
   - Streaming HTTP zero-copy direttamente da Flash (`PROGMEM`) per tutte le pagine HTML (`DASHBOARD_HTML`, `LOGIN_HTML`, `SETUP_SUPER_HTML`, `OTA_HTML`), eliminando la copia in heap contiguo (~`60 KB`) dentro `AsyncTCP`.
   - Cache in RAM delle ultime informazioni di rete (`_lastNetSsid`, `_lastNetIp`, `_lastNetGw`, `_lastNetMask`) caricate da NVS (`cr_net`) al boot, rimuovendo letture NVS al secondo su `GET /api/status`.
   - Esposizione esplicita dello stato `HEADLESS` (`weather.enabled`) nella card Meteo della Web Dashboard.
+- **Risolto blocco `chronoring.local` e NetBIOS `chronoring` dopo ~1 ora in assenza di altri peer mDNS (`NetworkManager`, `main.cpp`)**:
+  - Aggiunto hook leggero L2 su `netif->input` (`s_staGroupRxSpyInput`) per rilevare la reale ricezione di qualsiasi frame Ethernet Broadcast/Multicast senza dipendere da altri responder `_http._tcp` sulla LAN.
+  - Introdotto watchdog GTK auto-riparante a 2 fasi: IGMP rejoin + riavvio mDNS/NetBIOS (`NBNS.end()` + `NBNS.begin()`) dopo `2` minuti senza frame di gruppo e riassociazione STA dopo `4` minuti per rinnovare la chiave WPA2 GTK.
+  - Aggiornato il comando diagnostico seriale `'p'` con contatore ed età `rxGroupPkts`.
 
 ## [1.4.0] - 2026-11-22
 
